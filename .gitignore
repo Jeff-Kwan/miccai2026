@@ -1,7 +1,7 @@
 # Custom
-/echodyna
-/output
-/results
+echodyna/
+output/
+results/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

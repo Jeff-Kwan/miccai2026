@@ -130,7 +130,24 @@ def main():
 
         print(f"Using AzCopy at: {azcopy}")
         run_azcopy(azcopy, args.source, Path(args.dest))
-        print("Done.")
+        print("Download complete.")
+
+
+
+def unzip_echonet(zip_path="data/echodyna/EchoNet-Dynamic.zip", extract_to="data/echodyna"):
+    # Check if the zip file exists
+    if not os.path.isfile(zip_path):
+        raise FileNotFoundError(f"Zip file not found: {zip_path}")
+
+    # Create output directory if it doesn't exist
+    os.makedirs(extract_to, exist_ok=True)
+
+    # Extract the zip file
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(extract_to)
+
+    print(f"Successfully extracted '{zip_path}' to '{extract_to}'")
 
 if __name__ == "__main__":
-    main()
+    # main()
+    unzip_echonet()
