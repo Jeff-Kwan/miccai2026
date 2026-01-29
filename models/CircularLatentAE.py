@@ -1,17 +1,18 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
 
 class SpatioTemporalConvBlock(nn.Module):
     def __init__(self, channels):
         super(SpatioTemporalConvBlock, self).__init__()
         self.convs = nn.Sequential(
-            nn.Conv3d(channels, channels, kernel_size=(1, 3, 3), padding=(0, 1, 1), bias=False),
-            nn.BatchNorm3d(channels),
+            nn.Conv3d(channels, channels, kernel_size=(1, 3, 3), padding=(0, 1, 1)),
+            nn.GroupNorm(1, channels),
             nn.GELU(),
-            nn.Conv3d(channels, channels, kernel_size=(3, 1, 1), padding=(1, 0, 0), bias=False),
-            nn.BatchNorm3d(channels),
+            nn.Conv3d(channels, channels, kernel_size=(3, 1, 1), padding=(1, 0, 0)),
+            nn.GroupNorm(1, channels),
             nn.GELU(),
-            nn.Conv3d(channels, channels, kernel_size=(1, 1, 1), padding=(0, 0, 0)))
+            nn.Conv3d(channels, channels, kernel_size=(1, 3, 3), padding=(0, 1, 1)))
 
     def forward(self, x):
         return x + self.convs(x)
@@ -20,8 +21,8 @@ class SpatioConvBlock(nn.Module):
     def __init__(self, channels):
         super(SpatioConvBlock, self).__init__()
         self.convs = nn.Sequential(
-            nn.Conv3d(channels, channels, kernel_size=(1, 3, 3), padding=(0, 1, 1), bias=False),
-            nn.BatchNorm3d(channels),
+            nn.Conv3d(channels, channels, kernel_size=(1, 3, 3), padding=(0, 1, 1)),
+            nn.GroupNorm(1, channels),
             nn.GELU(),
             nn.Conv3d(channels, channels, kernel_size=(1, 3, 3), padding=(0, 1, 1)))
 
@@ -39,7 +40,7 @@ class ConvEncoder(nn.Module):
             level_blocks[f"{level}"] = nn.Sequential(
                 *[SpatioTemporalConvBlock(init_c * (2 ** level))
                     for _ in range(layers)],
-                nn.BatchNorm3d(init_c * (2 ** level)),
+                nn.GroupNorm(1, init_c * (2 ** level)),
                 nn.Conv3d(init_c*(2**level), init_c*(2** (level + 1)),
                     (1, 2, 2), (1, 2, 2), 0))
         self.levels = levels
@@ -65,7 +66,7 @@ class ConvDecoder(nn.Module):
             level_blocks[f"{level}"] = nn.Sequential(
                 nn.ConvTranspose3d(init_c * (2 ** (level + 1)),
                     init_c * (2 ** level), (1, 2, 2), (1, 2, 2), 0),
-                nn.BatchNorm3d(init_c * (2 ** level)),
+                nn.GroupNorm(1, init_c * (2 ** level)),
                 *[SpatioConvBlock(init_c * (2 ** level))
                     for _ in range(layers)])
         self.levels = levels
@@ -103,14 +104,17 @@ class CircularLatentAE(nn.Module):
         z = z.view(B, self.latent, T).transpose(1, 2)  # [B, T, latent]
 
         # Static Anatomical Structure
-        z_centroid = self.centroid_mlp(z).mean(dim=1, keepdim=True)  # [B, 1, latent]
+        z_raw = self.centroid_mlp(z)
+        z_centroid = z_raw.mean(dim=1, keepdim=True)  # [B, 1, latent]
+        self.centroidL2 = (z_raw - z_centroid.detach()).pow(2).mean() # Reduce centroid variance
 
         # Circular phase motion latent
         motion = self.motion_mlp(z) # [B, T, 3]
-        phase = motion[:, :, :1]
+        theta = torch.cumsum(F.softplus(motion[:, :, :1]), dim=1)   # Incremental phase increase
+        phase = torch.cat([torch.sin(theta), torch.cos(theta)], dim=-1)  # [B, T, 2]
         deformation = motion[:, :, 1:]
         self.deformationL2 = deformation.pow(2).mean()
-        modulation = torch.cat([torch.sin(phase), torch.cos(phase), deformation], dim=-1)  # [B, T, 2]
+        modulation = torch.cat([phase, deformation], dim=-1)  # [B, T, 4]
         
         Q, R = torch.linalg.qr(self.learnable_basis + 1e-8)
         delta_z = modulation @ Q.transpose(0, 1)  # [B, T, latent]
@@ -128,4 +132,4 @@ if __name__ == "__main__":
     print("Input shape:", x.shape)
     print("Reconstructed shape:", x_rec.shape)
     print("Number of parameters:", round(sum(p.numel() for p in model.parameters())/1e6, 2), "M")
-    print(f"Deformation L2:", model.deformationL2.item())
+    print(f"Deformation L2:", model.deformationL2.item(), f"Centroid L2:", model.centroidL2.item())

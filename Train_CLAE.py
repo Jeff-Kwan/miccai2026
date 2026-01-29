@@ -22,6 +22,7 @@ batch_size = 16
 learning_rate = 3e-4
 weight_decay = 1e-3
 deformLAMBDA = 1e-2
+centroidLAMBDA = 1e-2
 max_frames = 64
 
 
@@ -106,7 +107,7 @@ test_dl = DataLoader(test_ds, batch_size=batch_size, shuffle=False, collate_fn=c
 
 
 # Model
-model = CircularLatentAE(in_c=3, latent=512, enc_layers=4, dec_layers=2, levels=6)
+model = CircularLatentAE(in_c=3, latent=512, enc_layers=3, dec_layers=2, levels=6)
 model = model.to(device)
 print(f"Initialized CLAE with {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M trainable parameters.")
 
@@ -127,14 +128,14 @@ for epoch in range(epochs):
         recon_videos = model(videos)
         
         mse_loss = criterion(recon_videos, videos)
-        loss = mse_loss + deformLAMBDA * model.deformationL2
+        loss = mse_loss + deformLAMBDA * model.deformationL2 + centroidLAMBDA * model.centroidL2
         
         loss.backward()
         norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         
         train_loss += mse_loss.item() * videos.size(0)
-        p_bar.set_postfix({'MSE Loss': mse_loss.item(), 'Deform L2': model.deformationL2.item(), 'Grad Norm': norm.item()})
+        p_bar.set_postfix({'MSE Loss': mse_loss.item(), 'Deform L2': model.deformationL2.item(), 'Centroid L2': model.centroidL2.item(), 'Grad Norm': norm.item()})
     
     train_loss /= len(train_dl.dataset)
     train_losses.append(train_loss)
