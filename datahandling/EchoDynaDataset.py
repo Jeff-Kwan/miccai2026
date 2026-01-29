@@ -7,6 +7,7 @@ import torch
 from torch.utils.data import Dataset
 from torchvision import set_video_backend
 from torchvision.io import read_video
+from torchvision.transforms import Resize
 from PIL import Image, ImageDraw
 
 
@@ -100,23 +101,37 @@ class EchoDynaDataset(Dataset):
                     category=UserWarning,
                     message=".*video decoding and encoding capabilities of torchvision are deprecated.*",
                 )
-                video, audio, info = read_video(item["filename"], pts_unit="sec")
-            out["video"] = video
-            out["audio"] = audio
-            out["video_fps"] = float(info.get("video_fps", item["metadata"].get("FPS", 0.0)))
+                video, _, _ = read_video(item["filename"], pts_unit="sec")
+
+        # Video normalization to [-1, 1]
+        video = video.float() / 127.5 - 1.0
+        out["video"] = video.permute(3, 0, 1, 2)  # to [C, T, H, W]
 
         # Construct polygon mask from tracings
         tracings = item.get("tracings", [])
         H = int(item["metadata"].get("FrameHeight", 0))
         W = int(item["metadata"].get("FrameWidth", 0))
 
-        out["tracing"] = {"masks": [], "frames": []}
+        out["tracing"] = {"EDES": [], "masks": [], "frames": []}
         for tr in tracings:
             frame = int(tr["frame"])
             pts = tr["points"]
-            mask = self._points_to_mask(pts, H, W)
+            mask = self._points_to_mask(pts, H, W).unsqueeze(0)  # [1, H, W]
+            # out["tracing"]["EDES"].append(out["video"][:, frame, :, :])
             out["tracing"]["masks"].append(mask)
             out["tracing"]["frames"].append(frame)
+        # out["tracing"]["EDES"] = torch.stack(out["tracing"]["EDES"])
+        # out["tracing"]["masks"] = torch.stack(out["tracing"]["masks"])
+
+        # Resize video and masks so that they are 128x128
+        if H != 128 or W != 128:
+            resize_transform = Resize((128, 128))
+            out["video"] = resize_transform(out["video"])
+            resized_masks = []
+            for mask in out["tracing"]["masks"]:
+                resized_mask = resize_transform(mask.float()).byte()
+                resized_masks.append(resized_mask)
+            out["tracing"]["masks"] = resized_masks
         return out
 
 
@@ -261,23 +276,24 @@ if __name__ == "__main__":
     print(f"Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_ds)}")
     ex = train_ds[0]
     print("Example item:", ex["filename"], ex["metadata"], ex["video"].shape)
-    print("Tracing frames:", ex["tracing"]["frames"], "mask shape:", ex["tracing"]["masks"][0].shape, ex["tracing"]["masks"][1].shape)
+    print("Tracing: frames", ex["tracing"]["frames"], "masks shape", ex["tracing"]["masks"][0].shape)
+    # print("Tracing: EDES shape", ex["tracing"]["EDES"].shape)
 
-    # Matplotlib the tracing frame original frames on the left and masks on the right
-    from matplotlib import pyplot as plt
-    fig, axs = plt.subplots(2, 2, figsize=(8, 8))
-    for i in range(2):
-        frame_idx = ex["tracing"]["frames"][i]
-        mask = ex["tracing"]["masks"][i].numpy()
-        frame = ex["video"][frame_idx].numpy()
+    # # Matplotlib the tracing frame original frames on the left and masks on the right
+    # from matplotlib import pyplot as plt
+    # fig, axs = plt.subplots(2, 2, figsize=(8, 8))
+    # for i in range(2):
+    #     frame_idx = ex["tracing"]["frames"][i]
+    #     mask = ex["tracing"]["masks"][i].numpy()
+    #     frame = ex["video"][:, frame_idx, :, :].numpy()
 
-        axs[i, 0].imshow(frame)
-        axs[i, 0].set_title(f"Frame {frame_idx}")
-        axs[i, 0].axis("off")
+    #     axs[i, 0].imshow(frame)
+    #     axs[i, 0].set_title(f"Frame {frame_idx}")
+    #     axs[i, 0].axis("off")
 
-        axs[i, 1].imshow(mask, cmap="gray")
-        axs[i, 1].set_title(f"Mask {frame_idx}")
-        axs[i, 1].axis("off")
-    plt.tight_layout()
-    plt.savefig("example_tracing_masks.png")
-    plt.close()
+    #     axs[i, 1].imshow(mask, cmap="gray")
+    #     axs[i, 1].set_title(f"Mask {frame_idx}")
+    #     axs[i, 1].axis("off")
+    # plt.tight_layout()
+    # plt.savefig("example_tracing_masks.png")
+    # plt.close()
