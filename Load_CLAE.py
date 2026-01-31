@@ -1,0 +1,136 @@
+import torch 
+from torch import nn
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+
+from datahandling.EchoDynaDataset import load_echonet_dynamic_datasets
+from models.CircularLatentAE import CircularLatentAE
+import os
+import random
+import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
+from datetime import datetime
+import numpy as np
+import imageio
+
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+load_dir = "results/2026_01_29/17_24_CLAE"
+
+model = CircularLatentAE(in_c=3, latent=512, enc_layers=4, dec_layers=2, levels=6, deform_dim=2)
+model.load_state_dict(torch.load(os.path.join(load_dir, "CLAE.pth"), map_location=device))
+model = model.to(device)
+model.eval()
+print(model.radii)
+
+train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(
+    "data/echodyna/FileList.csv",
+    "data/echodyna/Videos",
+    "data/echodyna/VolumeTracings.csv",
+    load_video=True)
+
+
+idx = random.randint(0, len(val_ds) - 1)
+video = val_ds[idx]['video'].to(device).unsqueeze(0)  # [1, C, T, H, W]
+
+# Reconstruction
+with torch.inference_mode():
+    reconstruction, _, _, _ = model(video)
+
+output_dir = os.path.join(load_dir, "reconstructions")
+os.makedirs(output_dir, exist_ok=True)
+
+# Get FPS from dataset metadata
+fps = val_ds[idx]["metadata"]["FPS"]
+duration = 1.0 / fps  # seconds per frame for GIF
+
+# Prepare tensors
+video = video.squeeze(0).permute(1, 2, 3, 0)                 # [T, H, W, C]
+reconstruction = reconstruction.squeeze(0).permute(1, 2, 3, 0)  # [T, H, W, C]
+video = (video + 1).clip(0, 1) * 255
+reconstruction = (reconstruction + 1).clip(0, 1) * 255
+
+video = video.cpu().numpy().astype(np.uint8)
+reconstruction = reconstruction.cpu().numpy().astype(np.uint8)
+
+T, H, W, C = video.shape
+frames = []
+
+for t in range(T):
+    fig, axs = plt.subplots(2, 1, figsize=(4, 6))
+
+    axs[0].imshow(video[t])
+    axs[0].set_title("Original")
+    axs[0].axis("off")
+
+    axs[1].imshow(reconstruction[t])
+    axs[1].set_title("Reconstruction")
+    axs[1].axis("off")
+
+    plt.tight_layout()
+
+    # Render figure to numpy array
+    fig.canvas.draw()
+    frame = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+    frame = frame.reshape(fig.canvas.get_width_height()[::-1] + (4,))
+    frames.append(frame)
+
+    plt.close(fig)
+
+# Save GIF using dataset FPS
+gif_path = os.path.join(output_dir, f"{idx}-reconstruction.gif")
+imageio.mimsave(gif_path, frames, duration=duration)
+
+deformation = model.deformation.cpu().numpy()  # [B, T, 2]
+phase = model.phase.cpu().numpy()  # [B, T, 2]
+
+def plot_colormap_trajectory(x, y, title, xlabel, ylabel, save_path,
+                             cmap="coolwarm"):
+    """
+    x, y: arrays of shape (T,)
+    """
+    points = np.array([x, y]).T.reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
+
+    t = np.linspace(0, 1, len(x))  # normalized time
+
+    lc = LineCollection(segments, cmap=cmap)
+    lc.set_array(t)
+    lc.set_linewidth(2)
+
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.add_collection(lc)
+    ax.scatter(x[0], y[0], color="red", label="t=0", zorder=3)
+    ax.scatter(x[-1], y[-1], color="blue", label="t=T", zorder=3)
+
+    ax.set_xlim(x.min(), x.max())
+    ax.set_ylim(y.min(), y.max())
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.legend()
+
+    cbar = plt.colorbar(lc, ax=ax)
+    cbar.set_label("Normalized time")
+
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+plot_colormap_trajectory(
+    deformation[0, :, 0],
+    deformation[0, :, 1],
+    title="Deformation Trajectory",
+    xlabel="D1",
+    ylabel="D2",
+    save_path=os.path.join(output_dir, f"{idx}-deformation_trajectory.png"),
+    cmap="coolwarm"  # red → blue
+)
+plot_colormap_trajectory(
+    phase[0, :, 0],
+    phase[0, :, 1],
+    title="Phase Trajectory",
+    xlabel="Sin(phase) * radius",
+    ylabel="Cos(phase) * radius",
+    save_path=os.path.join(output_dir, f"{idx}-phase_trajectory.png"),
+    cmap="coolwarm"  # red → blue
+)
