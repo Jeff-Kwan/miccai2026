@@ -27,6 +27,9 @@ model_dict.update(matched)
 model.load_state_dict(model_dict)
 model = model.to(device)
 model.encoder.requires_grad_(False)
+model.centroid_mlp.requires_grad_(False)
+model.motion_mlp.requires_grad_(False)
+model.motion_basis.requires_grad_(False)
 
 # Training Parameters
 epochs = 10
