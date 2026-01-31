@@ -134,7 +134,7 @@ def main():
 
 
 
-def unzip_echonet(zip_path="data/echodyna/EchoNet-Dynamic.zip", extract_to="data/echodyna"):
+def unzip_echonet(zip_path="data/echodyna/echonetdynamic-2/EchoNet-Dynamic.zip", extract_to="data/echodyna"):
     # Check if the zip file exists
     if not os.path.isfile(zip_path):
         raise FileNotFoundError(f"Zip file not found: {zip_path}")
@@ -148,6 +148,10 @@ def unzip_echonet(zip_path="data/echodyna/EchoNet-Dynamic.zip", extract_to="data
 
     print(f"Successfully extracted '{zip_path}' to '{extract_to}'")
 
+    # delete the zip file & the directory after extraction
+    os.remove(zip_path)
+    shutil.rmtree(os.path.dirname(zip_path))
+
 if __name__ == "__main__":
-    # main()
+    main()
     unzip_echonet()
