@@ -84,7 +84,7 @@ class ConvDecoder(nn.Module):
     def forward(self, x, skips=None):
         x = self.in_conv(x)
         for level in reversed(range(self.levels)):
-            if self.skips:
+            if self.skips and skips is not None:
                 x = torch.cat([x, skips[level]], dim=1)
                 x = self.merges[f"{level}"](x)
             x = self.level_blocks[f"{level}"](x)
@@ -100,18 +100,15 @@ class MotionLatentAE(nn.Module):
         self.encoder = ConvEncoder(in_c, latent, enc_layers, levels)
         self.decoder = ConvDecoder(out_c, latent, dec_layers, levels, skips)
 
-        self.latent_mlp = nn.Sequential(
+        self.centroid_mlp = nn.Sequential(
             nn.Linear(latent, latent*2),
             nn.GELU(),
             nn.Linear(latent*2, latent))
-        # self.motion_mlp = nn.Sequential(
-        #     nn.Linear(latent, latent),
-        #     nn.GELU(),
-        #     nn.Linear(latent, latent, bias=False))
-        # with torch.no_grad():
-        #     U = torch.randn(latent, 2)
-        #     V = torch.randn(2, latent)
-        #     self.motion_mlp[-1].weight.copy_(U @ V / latent**0.5)   # rank init ~ 2
+        self.motion_mlp = nn.Sequential(
+            nn.Linear(latent, latent),
+            nn.GELU(),
+            nn.Linear(latent, 2))
+        self.motion_basis = nn.Parameter(torch.randn(latent, 2))
 
     def forward(self, x):
         B, C, T, H, W = x.shape
@@ -119,17 +116,25 @@ class MotionLatentAE(nn.Module):
         z = z.view(B, self.latent, T).transpose(1, 2)  # [B, T, latent]
 
         # Static Anatomical Structure
-        z = self.latent_mlp(z)  # [B, T, latent]
-        z[:, :, 2:] = z[:, :, 2:].mean(dim=1, keepdim=True)
+        z_centroid = self.centroid_mlp(z).mean(dim=1, keepdim=True)  # [B, 1, latent]
 
-        z_hat = z.reshape(B, self.latent, T, 1, 1)
+        # Dynamic motion component
+        z_motion = self.motion_mlp(z)  # [B, T, 2]
+        Q, R = torch.linalg.qr(self.motion_basis + 1e-8, mode='reduced')
+        delta_z = z_motion @ Q.transpose(0, 1)  # [B, T, latent]
+        
+        z_hat = (z_centroid + delta_z).transpose(1, 2).reshape(B, self.latent, T, 1, 1)
         x_rec = self.decoder(z_hat, skips if self.skips else None)
-        return x_rec
+        if not self.skips:
+            x_centroid = self.decoder(z_centroid.transpose(1, 2).reshape(B, self.latent, 1, 1, 1), skips=None).expand(-1, -1, T, -1, -1)
+        else:
+            x_centroid = None
+        return x_rec, x_centroid
 
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MotionLatentAE(in_c=3, latent=512, enc_layers=4, dec_layers=2, levels=6, skips=True)
+    model = MotionLatentAE(in_c=3, latent=512, enc_layers=4, dec_layers=2, levels=6, skips=False)
     model = model.to(device)
     x = torch.randn(2, 3, 10, 128, 128, device=device)  # [B, C, T, H, W]
 

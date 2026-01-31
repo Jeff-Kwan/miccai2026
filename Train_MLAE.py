@@ -23,7 +23,7 @@ learning_rate = 3e-4
 weight_decay = 1e-3
 frechetLAMBDA = 1.0
 rankLAMBDA = 1.0
-max_frames = 128
+max_frames = 64
 
 
 # Functions
@@ -45,7 +45,7 @@ def plot_recons(model, val_ds, output_dir):
     model.eval()
     with torch.no_grad():
         batch_device = batch.to(device)
-        recon_batch = model(batch_device)
+        recon_batch, _ = model(batch_device)
         recon_batch = recon_batch.cpu()
     batch = batch.cpu()
 
@@ -92,7 +92,7 @@ def plot_recons(model, val_ds, output_dir):
     clip_batch = clip.unsqueeze(0).to(device)  # [1, C, 16, H, W]
     model.eval()
     with torch.no_grad():
-        recon_clip_batch = model(clip_batch)
+        recon_clip_batch, _ = model(clip_batch)
         recon_clip_batch = recon_clip_batch.cpu()  # [1, C, 16, H, W]
     clip = clip.cpu()
     recon_clip = recon_clip_batch[0]  # [C, 16, H, W]
@@ -177,18 +177,18 @@ for epoch in range(epochs):
         videos = batch['video'].to(device, non_blocking=True)  # [B, C, T, H, W]
         
         optimizer.zero_grad()
-        x_rec = model(videos)
+        x_rec, x_centroid = model(videos)
         
         mse_loss = criterion(x_rec, videos)
-        # rank_penalty = effective_rank(model.motion_mlp[-1].weight)
-        loss = mse_loss #+ rankLAMBDA * rank_penalty
+        frechet_loss = criterion(x_centroid, videos)
+        loss = mse_loss + frechet_loss / videos.size(2)
         
         loss.backward()
         norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         
         train_loss += mse_loss.item() * videos.size(0)
-        p_bar.set_postfix({'MSE Loss': mse_loss.item(), 'Grad Norm': norm.item()})
+        p_bar.set_postfix({'MSE Loss': mse_loss.item(), 'Frechet Loss': frechet_loss.item(), 'Grad Norm': norm.item()})
         
     train_loss /= len(train_dl.dataset)
     train_losses.append(train_loss)
@@ -199,7 +199,7 @@ for epoch in range(epochs):
         p_bar = tqdm(val_dl, desc=f"Validation Epoch {epoch+1}/{epochs}")
         for batch in p_bar:
             videos = batch['video'].to(device, non_blocking=True)
-            x_rec = model(videos)
+            x_rec, _ = model(videos)
             
             mse_loss = criterion(x_rec, videos)
             val_loss += mse_loss.item() * videos.size(0)
