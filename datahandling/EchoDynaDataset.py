@@ -214,6 +214,7 @@ def load_echonet_dynamic_datasets(
 
     # --- NEW: load tracings once and attach to entries ---
     tracings_map = _load_volume_tracings(tracings_dir)
+    all_tracings = list(tracings_map.keys())
 
     with open(csv_path, "r", newline="") as f:
         reader = csv.DictReader(f)
@@ -239,7 +240,10 @@ def load_echonet_dynamic_datasets(
                 raise FileNotFoundError(f"Missing video file: {entry['filename']}")
 
             # --- NEW: attach list of tracings for this file (typically two frames) ---
-            entry["tracings"] = tracings_map.get(entry["FileName"], [])
+            if entry["FileName"] in tracings_map:
+                entry["tracings"] = tracings_map[entry["FileName"]]
+            else:
+                continue  # skip entries with no tracings
 
             split = row["Split"].strip().upper()
             if split == "TRAIN":
