@@ -120,6 +120,7 @@ class MotionLatentAE(nn.Module):
 
         # Dynamic motion component
         z_motion = self.motion_mlp(z)  # [B, T, 2]
+        self.z_motion = z_motion  # Visualization
         Q, R = torch.linalg.qr(self.motion_basis + 1e-8, mode='reduced')
         delta_z = z_motion @ Q.transpose(0, 1)  # [B, T, latent]
         
