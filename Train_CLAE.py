@@ -20,10 +20,11 @@ os.makedirs(output_dir, exist_ok=True)
 epochs = 100
 batch_size = 16
 learning_rate = 3e-4
-weight_decay = 1e-3
-deformLAMBDA = 1e-2
-centroidLAMBDA = 1e-2
-max_frames = 64
+weight_decay = 1e-4
+frechetLAMBDA = 1e-1
+deformLAMBDA = 2e-3
+centroidLAMBDA = 1e-3
+max_frames = 48
 
 
 # Functions
@@ -45,11 +46,14 @@ def plot_recons(model, val_ds, output_dir):
     model.eval()
     with torch.no_grad():
         batch_device = batch.to(device)
-        recon_batch = model(batch_device).cpu()
+        recon_batch, _, _, _ = model(batch_device)
+        recon_batch = recon_batch.cpu()
     batch = batch.cpu()
 
     # helper to convert tensor [C,H,W] -> numpy HxW or HxWx3
     def to_numpy(img_t):
+        # [-1, 1] to [0, 1]
+        img_t = (img_t + 1.0) / 2.0
         arr = img_t.permute(1, 2, 0).numpy()
         arr = arr.clip(0.0, 1.0)
         if arr.shape[2] == 1:
@@ -74,7 +78,42 @@ def plot_recons(model, val_ds, output_dir):
             axs[1, i].imshow(recon_np)
 
     plt.tight_layout()
-    plt.savefig(f"{output_dir}/recon.png", bbox_inches="tight")
+    plt.savefig(f"{output_dir}/recon_frames.png", bbox_inches="tight")
+    plt.clf()
+
+    # Then pick a video to recon 16 consecutive frames
+    vid_idx = idxs[0]
+    video = val_ds[int(vid_idx)]['video']  # [C, T, H, W]
+    T = video.shape[1]
+    if T >= 16:
+        start_frame = random.randint(0, T - 16)
+    else:
+        start_frame = 0
+    clip = video[:, start_frame : start_frame + 16, :, :]  # [C, 16, H, W]
+    clip_batch = clip.unsqueeze(0).to(device)  # [1, C, 16, H, W]
+    model.eval()
+    with torch.no_grad():
+        recon_clip_batch, _, _, _ = model(clip_batch)
+        recon_clip_batch = recon_clip_batch.cpu()  # [1, C, 16, H, W]
+    clip = clip.cpu()
+    recon_clip = recon_clip_batch[0]  # [C, 16, H, W]
+    fig, axs = plt.subplots(2, 16, figsize=(32, 4))
+    for i in range(16):
+        orig = clip[:, i, :, :]       # [C, H, W]
+        recon = recon_clip[:, i, :, :]  # [C, H, W]
+        orig_np = to_numpy(orig)
+        recon_np = to_numpy(recon)
+
+        axs[0, i].axis("off")
+        axs[1, i].axis("off")
+        if orig_np.ndim == 2:
+            axs[0, i].imshow(orig_np, cmap="gray")
+            axs[1, i].imshow(recon_np, cmap="gray")
+        else:
+            axs[0, i].imshow(orig_np)
+            axs[1, i].imshow(recon_np)
+    plt.tight_layout()
+    plt.savefig(f"{output_dir}/recon_video.png", bbox_inches="tight")    
     plt.close(fig)
 
 
@@ -101,13 +140,12 @@ def collate_fn(batch):
     return {'video': videos}
 
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, 
-                      num_workers=12, pin_memory=True, persistent_workers=True)
-val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=2)
-test_dl = DataLoader(test_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=2)
+                      num_workers=10, pin_memory=True, persistent_workers=True)
+val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=6)
 
 
 # Model
-model = CircularLatentAE(in_c=3, latent=512, enc_layers=3, dec_layers=2, levels=6)
+model = CircularLatentAE(in_c=3, latent=512, enc_layers=4, dec_layers=2, levels=6, deform_dim=2)
 model = model.to(device)
 print(f"Initialized CLAE with {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M trainable parameters.")
 
@@ -125,18 +163,20 @@ for epoch in range(epochs):
         videos = batch['video'].to(device, non_blocking=True)  # [B, C, T, H, W]
         
         optimizer.zero_grad()
-        recon_videos = model(videos)
+        x_rec, x_centroid, deformationL2, centroidL2 = model(videos)
         
-        mse_loss = criterion(recon_videos, videos)
-        loss = mse_loss + deformLAMBDA * model.deformationL2 + centroidLAMBDA * model.centroidL2
+        mse_loss = criterion(x_rec, videos)
+        frechet_mse = criterion(x_centroid, videos)
+        loss = mse_loss + frechetLAMBDA * frechet_mse \
+            + deformLAMBDA * deformationL2 + centroidLAMBDA * centroidL2
         
         loss.backward()
         norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         
         train_loss += mse_loss.item() * videos.size(0)
-        p_bar.set_postfix({'MSE Loss': mse_loss.item(), 'Deform L2': model.deformationL2.item(), 'Centroid L2': model.centroidL2.item(), 'Grad Norm': norm.item()})
-    
+        p_bar.set_postfix({'MSE Loss': mse_loss.item(), 'Deform L2': deformationL2.item(), 'Centroid L2': centroidL2.item(), 'Grad Norm': norm.item()})
+        
     train_loss /= len(train_dl.dataset)
     train_losses.append(train_loss)
     
@@ -146,12 +186,12 @@ for epoch in range(epochs):
         p_bar = tqdm(val_dl, desc=f"Validation Epoch {epoch+1}/{epochs}")
         for batch in p_bar:
             videos = batch['video'].to(device, non_blocking=True)
-            recon_videos = model(videos)
+            x_rec, x_centroid, deformationL2, centroidL2 = model(videos)
             
-            mse_loss = criterion(recon_videos, videos)
+            mse_loss = criterion(x_rec, videos)
             val_loss += mse_loss.item() * videos.size(0)
             p_bar.set_postfix({'MSE Loss': mse_loss.item()})
-    
+            
     val_loss /= len(val_dl.dataset)
     val_losses.append(val_loss)
     

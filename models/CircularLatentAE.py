@@ -82,7 +82,7 @@ class ConvDecoder(nn.Module):
 
 
 class CircularLatentAE(nn.Module):
-    def __init__(self, in_c=3, latent=512, enc_layers=6, dec_layers=2, levels=6):
+    def __init__(self, in_c=3, latent=512, enc_layers=6, dec_layers=2, levels=6, deform_dim=2):
         super(CircularLatentAE, self).__init__()
         self.latent = latent
         self.encoder = ConvEncoder(in_c, latent, enc_layers, levels)
@@ -95,8 +95,9 @@ class CircularLatentAE(nn.Module):
         self.motion_mlp = nn.Sequential(
             nn.Linear(latent, latent),
             nn.GELU(),
-            nn.Linear(latent, 3))
-        self.learnable_basis = nn.Parameter(torch.randn(latent, 4))
+            nn.Linear(latent, 1+deform_dim))
+        self.learnable_basis = nn.Parameter(torch.randn(latent, 2+deform_dim))
+        self.radii = nn.Parameter(torch.ones(1, 1, 2) * 0.1)
 
     def forward(self, x):
         B, C, T, H, W = x.shape
@@ -106,30 +107,31 @@ class CircularLatentAE(nn.Module):
         # Static Anatomical Structure
         z_raw = self.centroid_mlp(z)
         z_centroid = z_raw.mean(dim=1, keepdim=True)  # [B, 1, latent]
-        self.centroidL2 = (z_raw - z_centroid.detach()).pow(2).mean() # Reduce centroid variance
+        centroidL2 = (z_raw - z_centroid.clone().detach()).pow(2).sum(dim=-1).mean()
 
         # Circular phase motion latent
         motion = self.motion_mlp(z) # [B, T, 3]
-        theta = torch.cumsum(F.softplus(motion[:, :, :1]), dim=1)   # Incremental phase increase
-        phase = torch.cat([torch.sin(theta), torch.cos(theta)], dim=-1)  # [B, T, 2]
+        phase = torch.cat([torch.sin(motion[:, :, :1]), torch.cos(motion[:, :, :1])], dim=-1)  # [B, T, 2]
         deformation = motion[:, :, 1:]
-        self.deformationL2 = deformation.pow(2).mean()
-        modulation = torch.cat([phase, deformation], dim=-1)  # [B, T, 4]
+        deformationL2 = deformation.pow(2).sum(dim=-1).mean()
+        modulation = torch.cat([self.radii*phase, deformation], dim=-1)  # [B, T, 2+deform_dim]
         
-        Q, R = torch.linalg.qr(self.learnable_basis + 1e-8)
+        Q, R = torch.linalg.qr(self.learnable_basis + 1e-8, mode='reduced')
         delta_z = modulation @ Q.transpose(0, 1)  # [B, T, latent]
 
-        z_hat = (z_centroid + delta_z).transpose(0, 1).reshape(B, self.latent, T, 1, 1)
+        z_hat = (z_centroid + delta_z).transpose(1, 2).reshape(B, self.latent, T, 1, 1)
         x_rec = self.decoder(z_hat)
-        return x_rec
+        x_centroid = self.decoder(z_centroid.transpose(1, 2).reshape(B, self.latent, 1, 1, 1).expand(-1, -1, T, -1, -1))
+        return x_rec, x_centroid, deformationL2, centroidL2
 
 
 if __name__ == "__main__":
-    model = CircularLatentAE(in_c=3, latent=512, enc_layers=4, dec_layers=2, levels=6)
+    model = CircularLatentAE(in_c=3, latent=512, enc_layers=4, dec_layers=2, levels=6, deform_dim=2)
     x = torch.randn(2, 3, 10, 128, 128)  # [B, C, T, H, W]
     with torch.no_grad():
-        x_rec = model(x)
+        x_rec, x_centroid, deformationL2, centroidL2 = model(x)
     print("Input shape:", x.shape)
     print("Reconstructed shape:", x_rec.shape)
+    print("Centroid shape:", x_centroid.shape)
     print("Number of parameters:", round(sum(p.numel() for p in model.parameters())/1e6, 2), "M")
-    print(f"Deformation L2:", model.deformationL2.item(), f"Centroid L2:", model.centroidL2.item())
+    print(f"Deformation L2:", deformationL2.item(), f"Centroid L2:", centroidL2.item())
