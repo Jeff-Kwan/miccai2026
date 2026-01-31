@@ -17,12 +17,10 @@ output_dir = f"results/{date}/{timestamp}_MLAE"
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 20
+epochs = 100
 batch_size = 8
 learning_rate = 3e-4
 weight_decay = 1e-3
-frechetLAMBDA = 1.0
-rankLAMBDA = 1.0
 max_frames = 64
 
 

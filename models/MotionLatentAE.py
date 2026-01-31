@@ -116,7 +116,7 @@ class MotionLatentAE(nn.Module):
         z = z.view(B, self.latent, T).transpose(1, 2)  # [B, T, latent]
 
         # Static Anatomical Structure
-        z_centroid = self.centroid_mlp(z).mean(dim=1, keepdim=True)  # [B, 1, latent]
+        z_centroid = self.centroid_mlp(z.mean(dim=1, keepdim=True))  # [B, 1, latent]
 
         # Dynamic motion component
         z_motion = self.motion_mlp(z)  # [B, T, 2]

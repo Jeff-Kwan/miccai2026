@@ -17,12 +17,10 @@ output_dir = f"results/{date}/{timestamp}_MLT"
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 20
-batch_size = 8
-learning_rate = 3e-4
+epochs = 100
+batch_size = 4
+learning_rate = 2e-4
 weight_decay = 1e-3
-frechetLAMBDA = 1.0
-rankLAMBDA = 1.0
 max_frames = 64
 
 
@@ -144,7 +142,7 @@ val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=col
 
 
 # Model
-model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, dec_layers=2, levels=5, motion_dim=2, skips=False)
+model = MotionLatentAE(in_c=3, latent=256, enc_layers=2, t_layers=6, dec_layers=2, levels=3, skips=False)
 model = model.to(device)
 print(f"Initialized MLT with {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M trainable parameters.")
 

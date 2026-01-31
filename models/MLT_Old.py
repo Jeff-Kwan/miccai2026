@@ -1,6 +1,5 @@
 import torch
 from torch import nn
-from SpatialTemporalTransformer import SpatialTemporalTransformer
     
 class SpatialConvBlock(nn.Module):
     def __init__(self, channels):
@@ -25,7 +24,7 @@ class ConvEncoder(nn.Module):
             level_blocks[f"{level}"] = nn.Sequential(
                 *[SpatialConvBlock(init_c * (2 ** level))
                     for _ in range(layers)],
-                nn.GroupNorm(4, init_c * (2 ** level)),
+                nn.GroupNorm(1, init_c * (2 ** level)),
                 nn.Conv3d(init_c*(2**level), init_c*(2** (level + 1)),
                     (1, 2, 2), (1, 2, 2), 0))
         self.bottleneck = nn.Sequential(*[SpatialConvBlock(latent) for _ in range(layers)])
@@ -51,7 +50,7 @@ class ConvDecoder(nn.Module):
             level_blocks[f"{level}"] = nn.Sequential(
                 nn.ConvTranspose3d(init_c * (2 ** (level + 1)),
                     init_c * (2 ** level), (1, 2, 2), (1, 2, 2), 0),
-                nn.GroupNorm(4, init_c * (2 ** level)),
+                nn.GroupNorm(1, init_c * (2 ** level)),
                 *[SpatialConvBlock(init_c * (2 ** level))
                     for _ in range(layers)])
         self.levels = levels
@@ -75,13 +74,11 @@ class ConvDecoder(nn.Module):
 
 
 class MotionLatentAE(nn.Module):
-    def __init__(self, in_c=3, out_c=3, latent=512, enc_layers=6, t_layers=6, 
-                 dec_layers=2, levels=6, motion_dim=2, skips=False):
+    def __init__(self, in_c=3, out_c=3, latent=512, enc_layers=6, dec_layers=2, levels=6, motion_dim=2, skips=False):
         super(MotionLatentAE, self).__init__()
         self.latent = latent
         self.skips = skips
         self.encoder = ConvEncoder(in_c, latent, enc_layers, levels)
-        self.transformer = SpatialTemporalTransformer(dim=latent, depth=t_layers, num_heads=4)
         self.decoder = ConvDecoder(out_c, latent, dec_layers, levels, skips)
 
         self.centroid_mlp = nn.Sequential(
@@ -89,22 +86,17 @@ class MotionLatentAE(nn.Module):
             nn.GELU(),
             nn.Conv3d(latent*2, latent, 1, 1, 0))
         self.motion_mlp = nn.Sequential(
-            nn.Conv3d(latent, latent, 1, 1, 0),
+            nn.Conv3d(latent, latent*2, 1, 1, 0),
             nn.GELU(),
-            nn.Conv3d(latent, motion_dim, 1, 1, 0))
+            nn.Conv3d(latent*2, motion_dim, 1, 1, 0))
         self.motion_basis = nn.Parameter(torch.randn(latent, motion_dim))
 
     def forward(self, x):
         B, C, T, H, W = x.shape
-
-        # Convolutional embedding
         z, skips = self.encoder(x) # [B, latent, T, H', W']
 
-        # Spatial-Temporal Latent Transformer
-        z = self.transformer(z)    # [B, latent, T, H', W']
-
         # Spatially-static structural component
-        z_centroid = self.centroid_mlp(z.mean(dim=2, keepdim=True))  # [B, latent, 1, H', W']
+        z_centroid = self.centroid_mlp(z).mean(dim=2, keepdim=True)  # [B, latent, 1, H', W']
 
         # Frame-wise motion component
         z_motion = self.motion_mlp(z).mean(dim=[3,4])  # [B, latent, T, 1, 1]
@@ -120,10 +112,9 @@ class MotionLatentAE(nn.Module):
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MotionLatentAE(in_c=3, latent=256, enc_layers=2, t_layers=6, 
-                           dec_layers=2, levels=3, skips=True)
+    model = MotionLatentAE(in_c=3, latent=512, enc_layers=4, dec_layers=2, levels=6, skips=True)
     model = model.to(device)
-    x = torch.randn(4, 3, 64, 128, 128, device=device)  # [B, C, T, H, W]
+    x = torch.randn(6, 3, 64, 128, 128, device=device)  # [B, C, T, H, W]
 
     # Profile memory usage
     torch.cuda.empty_cache() if torch.cuda.is_available() else None
