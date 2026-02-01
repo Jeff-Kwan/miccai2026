@@ -23,23 +23,26 @@ model = MotionLatentAE(in_c=3, init_c=8, out_c=1, latent=256,
                            enc_layers=2, t_layers=8, t_heads=4, t_latents=8,
                             dec_layers=2, levels=4, skips=True)
 pretrained = torch.load(os.path.join(load_dir, "MLT.pth"), map_location=device)
+model = model.to(device)
+
+# freeze selected submodules first so we can detect which params are non-trainable
+# model.encoder.requires_grad_(False)
+# model.transformer.requires_grad_(False)
+# model.centroid_mlp.requires_grad_(False)
+# model.motion_mlp.requires_grad_(False)
+# model.motion_basis.requires_grad_(False)
 model_dict = model.state_dict()
-matched = {k: v for k, v in pretrained.items() if k in model_dict and v.shape == model_dict[k].shape}
+# frozen_param_names = {name for name, p in model.named_parameters() if not p.requires_grad}
+matched = {k: v for k, v in pretrained.items() if k in model_dict and v.shape == model_dict[k].shape}# and k in frozen_param_names}
 model_dict.update(matched)
 model.load_state_dict(model_dict)
-model = model.to(device)
-model.encoder.requires_grad_(False)
-model.transformer.requires_grad_(False)
-model.centroid_mlp.requires_grad_(False)
-model.motion_mlp.requires_grad_(False)
-model.motion_basis.requires_grad_(False)
 model.set_masking(False)
 
 # Training Parameters
-epochs = 20
-batch_size = 16
-learning_rate = 3e-4
-weight_decay = 1e-2
+epochs = 10
+batch_size = 8
+learning_rate = 2e-4
+weight_decay = 1e-3
 frames = 64
 
 train_params = {
@@ -50,36 +53,46 @@ train_params = {
 }
 
 comments = [
-    "Fine Tune Motion Latent Transformer (No transformer layers yet though)",
+    f"Full Fine Tune Motion Latent Transformer, {epochs} epochs with augmentations",
     "Tensor latent space for structure avg across time, per frame motion latent",
     "Focal + Dice, AdamW, CosineAnnealingLR",
 ]
 
 
 # augmentations = v2.Compose([
-#     v2.RandomHorizontalFlip(p=0.5),
+#     # v2.RandomHorizontalFlip(p=0.5),
 #     v2.RandomApply([
 #         v2.RandomAffine(
-#             degrees=30,
+#             degrees=20,
 #             translate=(0.1, 0.1),
 #             scale=(0.9, 1.2),
 #             interpolation=InterpolationMode.BILINEAR,
 #         ),
-#     ], p=0.5),
+#     ], p=0.4),
 #     v2.RandomApply([
 #         v2.GaussianBlur(kernel_size=7, sigma=(0.25, 1.5))
-#     ], p=0.4),
+#     ], p=0.3),
 #     v2.RandomApply([
 #         v2.GaussianNoise(0, 0.01)
-#     ], p=0.4),
+#     ], p=0.3),
 #     v2.RandomApply([
 #         v2.ColorJitter(brightness=0.2, contrast=0.2)
-#     ], p=0.4)
+#     ], p=0.3)
 # ])
 
 model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"Initialized ConvSegNet with {model_size/1e6:.2f}M trainable parameters.")
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+# optimizer with separate lr for selected submodules
+_special_prefixes = ("encoder", "transformer", "centroid_mlp", "motion_mlp", "motion_basis")
+_group1 = [p for n, p in model.named_parameters() if any(n.startswith(pref) for pref in _special_prefixes)]
+_group2 = [p for n, p in model.named_parameters() if not any(n.startswith(pref) for pref in _special_prefixes)]
+
+optimizer = torch.optim.AdamW(
+    [
+        {"params": _group1, "lr": 1e-5, "weight_decay": 0},
+        {"params": _group2, "lr": learning_rate, "weight_decay": weight_decay},
+    ]
+)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
 # --------------------
@@ -270,7 +283,7 @@ train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(
 )
 
 
-def collate_fn(batch, apply_augs=False, max_frames=32):
+def collate_fn(batch, max_frames, apply_augs=False):
     kept_imgs = []
     kept_masks = []
     kept_keyframe_idxs = []
@@ -334,6 +347,11 @@ def collate_fn(batch, apply_augs=False, max_frames=32):
     imgs = torch.stack(kept_imgs, dim=0)  # [B', C, L, H, W]
     kept_masks = torch.stack(kept_masks, dim=0)  # list of [K_i, H, W]
 
+    # if apply_augs:
+    #     imgs, kept_masks = augmentations(imgs.transpose(1, 2), kept_masks.transpose(1, 2))
+    #     imgs = imgs.transpose(1, 2).contiguous()
+    #     kept_masks = kept_masks.transpose(1, 2).contiguous()
+
     return {
         "imgs": imgs,
         "masks": kept_masks,               # list of [K_i, H, W] (no padding)
@@ -342,10 +360,10 @@ def collate_fn(batch, apply_augs=False, max_frames=32):
 
 
 def train_collate_fn(batch):
-    return collate_fn(batch, frames)
+    return collate_fn(batch, frames, apply_augs=True)
 
 def val_collate_fn(batch):
-    return collate_fn(batch, frames)
+    return collate_fn(batch, frames, apply_augs=False)
 
 train_dl = DataLoader(
     train_ds, batch_size=batch_size, shuffle=True, collate_fn=train_collate_fn,
