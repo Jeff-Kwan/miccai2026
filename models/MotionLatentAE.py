@@ -93,7 +93,7 @@ class ConvDecoder(nn.Module):
 
 
 class MotionLatentAE(nn.Module):
-    def __init__(self, in_c=3, out_c=3, latent=512, enc_layers=6, dec_layers=2, levels=6, skips=False):
+    def __init__(self, in_c=3, out_c=3, latent=512, enc_layers=6, dec_layers=2, levels=6, motion_dim=2, skips=False):
         super(MotionLatentAE, self).__init__()
         self.latent = latent
         self.skips = skips
@@ -107,8 +107,8 @@ class MotionLatentAE(nn.Module):
         self.motion_mlp = nn.Sequential(
             nn.Linear(latent, latent),
             nn.GELU(),
-            nn.Linear(latent, 2))
-        self.motion_basis = nn.Parameter(torch.randn(latent, 2))
+            nn.Linear(latent, motion_dim))
+        self.motion_basis = nn.Parameter(torch.randn(latent, motion_dim))
 
     def forward(self, x):
         B, C, T, H, W = x.shape
@@ -120,6 +120,11 @@ class MotionLatentAE(nn.Module):
 
         # Dynamic motion component
         z_motion = self.motion_mlp(z)  # [B, T, 2]
+        # Unit Circle
+        xy = z_motion[:, :, :2]
+        xy_norm = xy / (xy.norm(dim=-1, keepdim=True) + 1e-8)
+        z_motion = torch.cat([xy_norm, z_motion[:, :, 2:]], dim=-1)
+
         self.z_motion = z_motion  # Visualization
         Q, R = torch.linalg.qr(self.motion_basis + 1e-8, mode='reduced')
         delta_z = z_motion @ Q.transpose(0, 1)  # [B, T, latent]
@@ -135,7 +140,7 @@ class MotionLatentAE(nn.Module):
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = MotionLatentAE(in_c=3, latent=512, enc_layers=4, dec_layers=2, levels=6, skips=False)
+    model = MotionLatentAE(in_c=3, latent=512, enc_layers=4, dec_layers=2, levels=6, motion_dim=2, skips=False)
     model = model.to(device)
     x = torch.randn(2, 3, 10, 128, 128, device=device)  # [B, C, T, H, W]
 

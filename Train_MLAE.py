@@ -1,5 +1,6 @@
 import torch 
 from torch import nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -20,7 +21,7 @@ os.makedirs(output_dir, exist_ok=True)
 epochs = 100
 batch_size = 16
 learning_rate = 3e-4
-weight_decay = 1e-3
+weight_decay = 1e-2
 max_frames = 64
 
 
@@ -113,6 +114,40 @@ def plot_recons(model, val_ds, output_dir):
     plt.savefig(f"{output_dir}/recon_video.png", bbox_inches="tight")    
     plt.close(fig)
 
+@torch.no_grad()  # remove if you need gradients (median is piecewise-constant anyway)
+def median_blur(x: torch.Tensor, padding_mode: str = "reflect") -> torch.Tensor:
+    """
+    3x3 median blur over H,W for x shaped [B, C, T, H, W].
+    Median is computed independently per (B,C,T) plane.
+
+    padding_mode: "reflect" (default), "replicate", or "circular".
+    """
+    if x.ndim != 5:
+        raise ValueError(f"Expected x with 5 dims [B,C,T,H,W], got {tuple(x.shape)}")
+    B, C, T, H, W = x.shape
+    if H < 1 or W < 1:
+        return x
+
+    # Treat each time-step as an independent image in the batch
+    # [B,C,T,H,W] -> [B*T, C, H, W]
+    xt = x.permute(0, 2, 1, 3, 4).contiguous().view(B * T, C, H, W)
+
+    # Pad H,W by 1 on each side
+    xt = F.pad(xt, pad=(1, 1, 1, 1), mode=padding_mode)
+
+    # Unfold 3x3 neighborhoods: output is [B*T, C*9, H*W]
+    patches = F.unfold(xt, kernel_size=3, dilation=1, padding=0, stride=1)
+
+    # Reshape to [B*T, C, 9, H*W] so we can take per-channel median
+    patches = patches.view(B * T, C, 9, H * W)
+
+    # Median of 9 values = 5th smallest (k=5, 1-indexed)
+    med = patches.kthvalue(k=5, dim=2).values  # [B*T, C, H*W]
+
+    # Back to [B, C, T, H, W]
+    out = med.view(B * T, C, H, W).view(B, T, C, H, W).permute(0, 2, 1, 3, 4).contiguous()
+    return out
+
 
 
 # Dataset
@@ -142,7 +177,9 @@ val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=col
 
 
 # Model
-model = MotionLatentAE(in_c=3, out_c=3, latent=512, enc_layers=4, dec_layers=2, levels=6)
+model = MotionLatentAE(in_c=3, out_c=3, latent=512, enc_layers=4, dec_layers=2, levels=6,
+                       motion_dim=3, # Unit Circle + 1, 2 DoFs
+                       skips=False)
 model = model.to(device)
 print(f"Initialized MLAE with {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M trainable parameters.")
 
@@ -173,7 +210,8 @@ for epoch in range(epochs):
     p_bar = tqdm(train_dl, desc=f"Epoch {epoch+1}/{epochs}")
     for batch in p_bar:
         videos = batch['video'].to(device, non_blocking=True)  # [B, C, T, H, W]
-        
+        videos = median_blur(videos)    # Denoise before AE
+
         optimizer.zero_grad()
         x_rec, x_centroid = model(videos)
         
