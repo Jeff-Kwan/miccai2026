@@ -22,13 +22,13 @@ class LatentPerceiverBlock(nn.Module):
     frames_vis: [B, T, K, C]  (fixed read stream; never modified)
     latents:    [B, T, L, C]  (updated)
     """
-    def __init__(self, dim: int, num_heads: int, mlp_ratio: float = 4.0):
+    def __init__(self, dim: int, frame_dim: int, num_heads: int, mlp_ratio: float = 4.0):
         super().__init__()
 
         # (a) cross-attn: latents <- frames (per-frame)
         self.norm_latent_in = nn.LayerNorm(dim)
-        self.norm_frame_kv = nn.LayerNorm(dim)
-        self.cross_latent_from_frame = nn.MultiheadAttention(dim, num_heads, batch_first=True)
+        self.norm_frame_kv = nn.LayerNorm(frame_dim)
+        self.cross_latent_from_frame = nn.MultiheadAttention(dim, num_heads, kdim=frame_dim, vdim=frame_dim, batch_first=True)
 
         # (b) global latent self-attn over all time*latents
         self.norm_latent_sa = nn.LayerNorm(dim)
@@ -44,24 +44,24 @@ class LatentPerceiverBlock(nn.Module):
         )
 
     def forward(self, frames_vis: torch.Tensor, latents: torch.Tensor) -> torch.Tensor:
-        B, T, K, C = frames_vis.shape
-        _, _, L, _ = latents.shape
+        B, T, K, F = frames_vis.shape
+        _, _, L, E = latents.shape
 
         # (a) latents <- visible frame tokens (per-frame)
-        q = self.norm_latent_in(latents.reshape(B * T, L, C))
-        kv = self.norm_frame_kv(frames_vis.reshape(B * T, K, C))
+        q = self.norm_latent_in(latents.reshape(B * T, L, E))
+        kv = self.norm_frame_kv(frames_vis.reshape(B * T, K, F))
         upd_lat, _ = self.cross_latent_from_frame(q, kv, kv, need_weights=False)
-        latents = latents + upd_lat.reshape(B, T, L, C)
+        latents = latents + upd_lat.reshape(B, T, L, E)
 
         # (b) global latent self-attn over all time
-        lat_flat = latents.reshape(B, T * L, C)
+        lat_flat = latents.reshape(B, T * L, E)
         lat_ln = self.norm_latent_sa(lat_flat)
         lat_sa, _ = self.latent_self_attn(lat_ln, lat_ln, lat_ln, need_weights=False)
         lat_flat = lat_flat + lat_sa
 
         # (c) latent MLP
         lat_flat = lat_flat + self.latent_mlp(lat_flat)
-        latents = lat_flat.reshape(B, T, L, C)
+        latents = lat_flat.reshape(B, T, L, E)
 
         return latents
 
@@ -77,6 +77,7 @@ class SpatialTemporalLatentPerceiver(nn.Module):
     def __init__(
         self,
         dim: int,
+        frame_dim: int,
         depth: int,
         num_heads: int,
         num_latents: int = 8,
@@ -88,6 +89,7 @@ class SpatialTemporalLatentPerceiver(nn.Module):
     ):
         super().__init__()
         self.dim = dim
+        self.frame_dim = frame_dim
         self.depth = depth
         self.num_latents = num_latents
         self.keep_ratio = keep_ratio
@@ -96,13 +98,13 @@ class SpatialTemporalLatentPerceiver(nn.Module):
 
         # positional encoding (same as before)
         self.pos_dim = pos_hidden_mult * dim
-        self.pos_proj = nn.Conv3d(self.pos_dim, dim, kernel_size=1, bias=False)
+        self.pos_proj = nn.Conv3d(self.pos_dim, frame_dim, kernel_size=1, bias=False)
 
         # learned latent tokens
-        self.latent_base = nn.Parameter(torch.randn(1, num_latents, dim) * 0.02)
+        self.latent_base = nn.Parameter(torch.randn(1, num_latents, dim) / dim**0.5)
 
         self.blocks = nn.ModuleList(
-            [LatentPerceiverBlock(dim, num_heads, mlp_ratio) for _ in range(depth)]
+            [LatentPerceiverBlock(dim, frame_dim, num_heads, mlp_ratio) for _ in range(depth)]
         )
 
     def build_frame_pos(self, T: int, H: int, W: int, device: torch.device) -> torch.Tensor:
@@ -145,8 +147,8 @@ class SpatialTemporalLatentPerceiver(nn.Module):
     def forward(self, x: torch.Tensor):
         # x: [B,C,T,H,W]
         B, C, T, H, W = x.shape
-        if C != self.dim:
-            raise ValueError(f"Expected C={self.dim}, got {C}")
+        if C != self.frame_dim:
+            raise ValueError(f"Expected C={self.frame_dim}, got {C}")
         S = H * W
 
         # add positional encoding to frames (read stream )
@@ -195,7 +197,8 @@ if __name__ == "__main__":
     x = torch.randn(B, C, T, H, W, device=device)
 
     model = SpatialTemporalLatentPerceiver(
-        dim=C,
+        dim=256,
+        frame_dim=C,
         depth=6,
         num_heads=4,
         num_latents=8,
