@@ -18,7 +18,7 @@ os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
 epochs = 100
-batch_size = 8
+batch_size = 16
 learning_rate = 3e-4
 weight_decay = 1e-3
 max_frames = 64
