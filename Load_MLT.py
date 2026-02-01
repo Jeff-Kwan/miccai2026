@@ -10,9 +10,12 @@ import imageio
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_01_31/10_51_MLT"
+load_dir = "results/2026_01_31/18_22_MLT"
 
-model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, dec_layers=2, levels=5, motion_dim=2, skips=False)
+model = MotionLatentAE(in_c=3, init_c=8, out_c=3, latent=256, 
+                           enc_layers=2, t_layers=8, t_heads=4, t_latents=8,
+                            dec_layers=2, levels=4, skips=False)
+model = model.to(device)
 model.load_state_dict(torch.load(os.path.join(load_dir, "MLT.pth"), map_location=device))
 model = model.to(device)
 model.eval()
@@ -28,8 +31,27 @@ idx = random.randint(0, len(val_ds) - 1)
 video = val_ds[idx]['video'].to(device).unsqueeze(0)  # [1, C, T, H, W]
 
 # Reconstruction
+_, C, T, H, W = video.shape
 with torch.inference_mode():
-    reconstruction, centroid = model(video)
+    if T <= 64:
+        reconstruction, centroid = model(video)
+        z_motion = model.z_motion.cpu().numpy().squeeze()
+    else:
+        # Process long videos in chunks
+        chunk_size = 64
+        reconstruction_chunks = []
+        centroid_chunks = []
+        z_motion_chunks = []
+        for start in range(0, T, chunk_size):
+            end = min(start + chunk_size, T)
+            video_chunk = video[:, :, start:end, :, :]
+            rec_chunk, cent_chunk = model(video_chunk)
+            reconstruction_chunks.append(rec_chunk)
+            centroid_chunks.append(cent_chunk)
+            z_motion_chunks.append(model.z_motion.squeeze().cpu().numpy())
+        reconstruction = torch.cat(reconstruction_chunks, dim=2)
+        centroid = torch.cat(centroid_chunks, dim=2)
+        z_motion = np.concatenate(z_motion_chunks, axis=1).squeeze()
 
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
@@ -49,8 +71,6 @@ centroid = (centroid + 1).clip(0, 1) * 255
 video = video.cpu().numpy().astype(np.uint8)
 reconstruction = reconstruction.cpu().numpy().astype(np.uint8)
 centroid = centroid.cpu().numpy().astype(np.uint8)
-
-z_motion = model.z_motion.cpu().numpy().squeeze()  # [2, T]
 
 T, H, W, C = video.shape
 frames = []
@@ -101,8 +121,8 @@ def plot_colormap_trajectory(x, y, title, xlabel, ylabel, save_path,
 
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.add_collection(lc)
-    ax.scatter(x[0], y[0], color="red", label="t=0", zorder=3)
-    ax.scatter(x[-1], y[-1], color="blue", label="t=T", zorder=3)
+    ax.scatter(x[0], y[0], color="blue", label="t=0", zorder=3)
+    ax.scatter(x[-1], y[-1], color="red", label="t=T", zorder=3)
 
     ax.set_xlim(x.min(), x.max())
     ax.set_ylim(y.min(), y.max())
@@ -124,5 +144,5 @@ plot_colormap_trajectory(
     xlabel="D1",
     ylabel="D2",
     save_path=os.path.join(output_dir, f"{idx}-z_motion_trajectory.png"),
-    cmap="coolwarm"  # red → blue
+    cmap="coolwarm"
 )

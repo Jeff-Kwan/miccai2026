@@ -1,5 +1,6 @@
 import torch 
 from torch import nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -9,6 +10,8 @@ import os
 import random
 import matplotlib.pyplot as plt
 from datetime import datetime
+import numpy as np
+import imageio
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 date = datetime.now().strftime("%Y_%m_%d")
@@ -18,9 +21,10 @@ os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
 epochs = 100
-batch_size = 4
-learning_rate = 2e-4
-weight_decay = 1e-3
+batch_size = 8
+learning_rate = 1e-4
+weight_decay = 2e-2
+masking = 0.75
 max_frames = 64
 
 
@@ -41,6 +45,7 @@ def plot_recons(model, val_ds, output_dir):
 
     # run through model
     model.eval()
+    model.set_masking(False)
     with torch.no_grad():
         batch_device = batch.to(device)
         recon_batch, _ = model(batch_device)
@@ -78,41 +83,99 @@ def plot_recons(model, val_ds, output_dir):
     plt.savefig(f"{output_dir}/recon_frames.png", bbox_inches="tight")
     plt.clf()
 
-    # Then pick a video to recon 16 consecutive frames
+    # Then pick a video to recon
     vid_idx = idxs[0]
-    video = val_ds[int(vid_idx)]['video']  # [C, T, H, W]
-    T = video.shape[1]
-    if T >= 16:
-        start_frame = random.randint(0, T - 16)
-    else:
-        start_frame = 0
-    clip = video[:, start_frame : start_frame + 16, :, :]  # [C, 16, H, W]
-    clip_batch = clip.unsqueeze(0).to(device)  # [1, C, 16, H, W]
+    sample = val_ds[int(vid_idx)]
+    video = sample['video']              # [C, T, H, W]
+    video_batch = video.unsqueeze(0).to(device)  # [1, C, T, H, W]
+    fps = sample.get("metadata", {}).get("FPS", 50)
+    duration = 1.0 / float(fps)
+
     model.eval()
+    model.set_masking(False)
     with torch.no_grad():
-        recon_clip_batch, _ = model(clip_batch)
-        recon_clip_batch = recon_clip_batch.cpu()  # [1, C, 16, H, W]
-    clip = clip.cpu()
-    recon_clip = recon_clip_batch[0]  # [C, 16, H, W]
-    fig, axs = plt.subplots(2, 16, figsize=(32, 4))
-    for i in range(16):
-        orig = clip[:, i, :, :]       # [C, H, W]
-        recon = recon_clip[:, i, :, :]  # [C, H, W]
-        orig_np = to_numpy(orig)
-        recon_np = to_numpy(recon)
+        recon_batch, _ = model(video_batch)
+        recon_batch = recon_batch.cpu()
 
-        axs[0, i].axis("off")
-        axs[1, i].axis("off")
+    video = video.cpu()
+    recon = recon_batch[0]  # [C, T, H, W]
+
+    # helper: tensor [C,H,W] in [-1,1] -> uint8 image
+    def to_uint8(img_t):
+        img_t = (img_t + 1.0) / 2.0
+        img_t = img_t.clamp(0.0, 1.0)
+        arr = (img_t.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+        if arr.shape[2] == 1:
+            arr = arr[:, :, 0]
+        return arr
+
+    T = video.shape[1]
+    gif_frames = []
+
+    for t in range(T):
+        orig_np = to_uint8(video[:, t])
+        recon_np = to_uint8(recon[:, t])
+
+        fig, axs = plt.subplots(2, 1, figsize=(4, 6))
+        for ax in axs:
+            ax.axis("off")
+
         if orig_np.ndim == 2:
-            axs[0, i].imshow(orig_np, cmap="gray")
-            axs[1, i].imshow(recon_np, cmap="gray")
+            axs[0].imshow(orig_np, cmap="gray")
+            axs[1].imshow(recon_np, cmap="gray")
         else:
-            axs[0, i].imshow(orig_np)
-            axs[1, i].imshow(recon_np)
-    plt.tight_layout()
-    plt.savefig(f"{output_dir}/recon_video.png", bbox_inches="tight")    
-    plt.close(fig)
+            axs[0].imshow(orig_np)
+            axs[1].imshow(recon_np)
 
+        axs[0].set_title("Original", fontsize=10)
+        axs[1].set_title("Reconstruction", fontsize=10)
+        plt.tight_layout()
+
+        # Render matplotlib figure → numpy
+        fig.canvas.draw()
+        frame = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
+        frame = frame.reshape(fig.canvas.get_width_height()[::-1] + (4,))
+        gif_frames.append(frame)
+
+        plt.close(fig)
+
+    gif_path = os.path.join(output_dir, "recon_full_video.gif")
+    imageio.mimsave(gif_path, gif_frames, duration=duration)
+
+
+@torch.no_grad()  # remove if you need gradients (median is piecewise-constant anyway)
+def median_blur(x: torch.Tensor, padding_mode: str = "reflect") -> torch.Tensor:
+    """
+    3x3 median blur over H,W for x shaped [B, C, T, H, W].
+    Median is computed independently per (B,C,T) plane.
+
+    padding_mode: "reflect" (default), "replicate", or "circular".
+    """
+    if x.ndim != 5:
+        raise ValueError(f"Expected x with 5 dims [B,C,T,H,W], got {tuple(x.shape)}")
+    B, C, T, H, W = x.shape
+    if H < 1 or W < 1:
+        return x
+
+    # Treat each time-step as an independent image in the batch
+    # [B,C,T,H,W] -> [B*T, C, H, W]
+    xt = x.permute(0, 2, 1, 3, 4).contiguous().view(B * T, C, H, W)
+
+    # Pad H,W by 1 on each side
+    xt = F.pad(xt, pad=(1, 1, 1, 1), mode=padding_mode)
+
+    # Unfold 3x3 neighborhoods: output is [B*T, C*9, H*W]
+    patches = F.unfold(xt, kernel_size=3, dilation=1, padding=0, stride=1)
+
+    # Reshape to [B*T, C, 9, H*W] so we can take per-channel median
+    patches = patches.view(B * T, C, 9, H * W)
+
+    # Median of 9 values = 5th smallest (k=5, 1-indexed)
+    med = patches.kthvalue(k=5, dim=2).values  # [B*T, C, H*W]
+
+    # Back to [B, C, T, H, W]
+    out = med.view(B * T, C, H, W).view(B, T, C, H, W).permute(0, 2, 1, 3, 4).contiguous()
+    return out
 
 
 # Dataset
@@ -137,12 +200,15 @@ def collate_fn(batch):
     return {'video': videos}
 
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, 
-                      num_workers=10, pin_memory=True, persistent_workers=True)
-val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=6)
+                      num_workers=16, pin_memory=True, persistent_workers=True)
+val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, 
+                    num_workers=16, pin_memory=True, persistent_workers=True)
 
 
 # Model
-model = MotionLatentAE(in_c=3, latent=256, enc_layers=2, t_layers=6, dec_layers=2, levels=3, skips=False)
+model = MotionLatentAE(in_c=3, init_c=8, out_c=3, latent=256, 
+                           enc_layers=2, t_layers=8, t_heads=4, t_latents=8,
+                            dec_layers=2, levels=4, skips=False)
 model = model.to(device)
 print(f"Initialized MLT with {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M trainable parameters.")
 
@@ -169,10 +235,12 @@ def effective_rank(A: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
 train_losses = []; val_losses = []
 for epoch in range(epochs):
     model.train()
+    model.set_masking(True)
     train_loss = 0.0
     p_bar = tqdm(train_dl, desc=f"Epoch {epoch+1}/{epochs}")
     for batch in p_bar:
         videos = batch['video'].to(device, non_blocking=True)  # [B, C, T, H, W]
+        videos = median_blur(videos)
         
         optimizer.zero_grad()
         x_rec, x_centroid = model(videos)
@@ -192,16 +260,19 @@ for epoch in range(epochs):
     train_losses.append(train_loss)
     
     model.eval()
+    model.set_masking(False)
     val_loss = 0.0
     with torch.no_grad():
         p_bar = tqdm(val_dl, desc=f"Validation Epoch {epoch+1}/{epochs}")
         for batch in p_bar:
             videos = batch['video'].to(device, non_blocking=True)
+            videos = median_blur(videos)
             x_rec, _ = model(videos)
             
             mse_loss = criterion(x_rec, videos)
             val_loss += mse_loss.item() * videos.size(0)
             p_bar.set_postfix({'MSE Loss': mse_loss.item()})
+            
             
             
     val_loss /= len(val_dl.dataset)
