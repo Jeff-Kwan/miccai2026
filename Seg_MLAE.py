@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_01_31/15_48_MLAE"
+load_dir = "results/2026_02_02/05_09_MLAE"
 output_dir = os.path.join(load_dir, "LVSeg")
 os.makedirs(output_dir, exist_ok=True)
 
