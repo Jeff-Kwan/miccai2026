@@ -18,9 +18,9 @@ def sinusoidal_embedding_1d(length: int, dim: int, device: torch.device) -> torc
 
 class LatentPerceiverBlock(nn.Module):
     """
-    frames_vis:  [B, T, K, C]   (K visible tokens per frame)
-    frames_full: [B, T, S, C]   (S = H*W full tokens per frame, created before write-back)
+    frames_full: [B, T, S, C]   (single evolving stream)
     latents:     [B, T, L, C]
+    keep_idx:    [B, T, K]      indices into S specifying visible tokens to read each block
     """
     def __init__(self, dim: int, num_heads: int, mlp_ratio: float = 4.0):
         super().__init__()
@@ -50,10 +50,18 @@ class LatentPerceiverBlock(nn.Module):
             nn.Linear(hidden, dim),
         )
 
-    def forward(self, frames_vis: torch.Tensor, frames_full: torch.Tensor, latents: torch.Tensor):
-        B, T, K, C = frames_vis.shape
-        _, _, S, _ = frames_full.shape
+    def forward(self, frames_full: torch.Tensor, latents: torch.Tensor, keep_idx: torch.Tensor):
+        """
+        keep_idx is used to pick the visible tokens from the *current* evolving frames_full
+        right before cross-attention into latents.
+        """
+        B, T, S, C = frames_full.shape
         _, _, L, _ = latents.shape
+        K = keep_idx.shape[-1]
+
+        # --- pick visible tokens from the evolving stream (must happen before latent cross-attn) ---
+        keep_idx_exp = keep_idx.unsqueeze(-1).expand(B, T, K, C)         # [B,T,K,C]
+        frames_vis = frames_full.gather(dim=2, index=keep_idx_exp)       # [B,T,K,C]
 
         # (a) latents <- visible frame tokens (per-frame)
         q  = self.norm_latent_in(latents.reshape(B*T, L, C))
@@ -84,17 +92,6 @@ class LatentPerceiverBlock(nn.Module):
 
 
 class SpatialTemporalLatentTransformer(nn.Module):
-    """
-    Input: x [B, C, T, H, W]
-     behavior:
-      - add pos to get tokens-with-pos
-      - per-frame keep K tokens (K=int(keep_ratio*H*W))
-      - latents attend to visible tokens
-      - reconstruct full tokens by inserting (mask_token + pos) in masked slots
-      - full tokens attend to latents (write-back)
-    Output: [B, C, T, H, W]
-    Optionally returns mask info for loss computation.
-    """
     def __init__(
         self,
         dim: int,
@@ -115,14 +112,11 @@ class SpatialTemporalLatentTransformer(nn.Module):
         self.return_mask = return_mask
         self.do_masking = do_masking
 
-        # frame positional encoding (same as before)
         self.pos_dim = pos_hidden_mult * dim
         self.pos_proj = nn.Conv3d(self.pos_dim, dim, kernel_size=1, bias=False)
 
-        # learned latent tokens
         self.latent_base = nn.Parameter(torch.randn(1, num_latents, dim) * 0.02)
 
-        # learned mask token (shared across all masked positions)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, 1, dim))
         nn.init.normal_(self.mask_token, std=0.02)
 
@@ -155,63 +149,48 @@ class SpatialTemporalLatentTransformer(nn.Module):
 
     @staticmethod
     def _random_keep_indices(B: int, T: int, S: int, K: int, device: torch.device):
-        """
-        Returns:
-          keep_idx: [B,T,K] indices into S
-          mask:     [B,T,S] 1 for masked, 0 for kept ( convention varies; adjust as you like)
-        """
-        # sample independent permutations per (B,T)
         noise = torch.rand(B, T, S, device=device)
         ids = torch.argsort(noise, dim=-1)          # [B,T,S]
         keep_idx = ids[:, :, :K]                   # [B,T,K]
-
         mask = torch.ones(B, T, S, device=device, dtype=torch.float32)
         mask.scatter_(dim=-1, index=keep_idx, value=0.0)     # 0=keep, 1=mask
         return keep_idx, mask
 
     @staticmethod
     def _all_keep_indices(B: int, T: int, S: int, device: torch.device):
-        # keep everything: [B,T,S]
         keep_idx = torch.arange(S, device=device).view(1, 1, S).expand(B, T, S).contiguous()
         mask = torch.zeros(B, T, S, device=device, dtype=torch.float32)  # 0=kept
         return keep_idx, mask
 
     def forward(self, x: torch.Tensor):
-        # x: [B,C,T,H,W]
         B, C, T, H, W = x.shape
         if C != self.dim:
             raise ValueError(f"Expected C={self.dim}, got {C}")
         S = H * W
 
-        # positional encoding
         pos_raw = self.build_frame_pos(T, H, W, x.device)  # [1, pos_dim, T,H,W]
         pos = self.pos_proj(pos_raw)                       # [1, C,      T,H,W]
         x = x + pos
 
-        # flatten to tokens: [B,T,S,C]
         frames_tokens = x.permute(0, 2, 3, 4, 1).reshape(B, T, S, C)
-
-        # pos flat for masked insertion
         pos_flat = pos.permute(0, 2, 3, 4, 1).reshape(1, T, S, C)  # [1,T,S,C]
 
         if self.do_masking:
             K = max(1, int(self.keep_ratio * S))
-            keep_idx, mask = self._random_keep_indices(B, T, S, K, x.device)  # [B,T,K], [B,T,S]
+            keep_idx, mask = self._random_keep_indices(B, T, S, K, x.device)
         else:
             K = S
-            keep_idx, mask = self._all_keep_indices(B, T, S, x.device)        # [B,T,S], [B,T,S]
+            keep_idx, mask = self._all_keep_indices(B, T, S, x.device)
 
         keep_idx_exp = keep_idx.unsqueeze(-1).expand(B, T, K, C)
 
-        # fixed read stream
-        visible_x = frames_tokens.gather(dim=2, index=keep_idx_exp).clone()    # [B,T,K,C]
-
-        # evolving write stream
+        # --- single evolving stream initialization ---
         if self.do_masking:
             recon = self.mask_token.expand(B, T, S, C) + pos_flat.expand(B, T, S, C)
-            recon = recon.scatter(dim=2, index=keep_idx_exp, src=visible_x)
+            # seed visible positions with the original tokens
+            recon = recon.scatter(dim=2, index=keep_idx_exp,
+                                  src=frames_tokens.gather(dim=2, index=keep_idx_exp))
         else:
-            # no masked slots; just start from the full tokens
             recon = frames_tokens
 
         # latents [B,T,L,C]
@@ -219,14 +198,14 @@ class SpatialTemporalLatentTransformer(nn.Module):
         latents = latents + self.build_latent_temporal_pos(T, x.device)
 
         for blk in self.blocks:
-            recon, latents = blk(frames_vis=visible_x, frames_full=recon, latents=latents)
+            # latents read from the evolving recon each block (no separate read stream)
+            recon, latents = blk(frames_full=recon, latents=latents, keep_idx=keep_idx)
 
         out = recon.reshape(B, T, H, W, C).permute(0, 4, 1, 2, 3).contiguous()
 
         if self.return_mask:
             return out, mask, keep_idx
         return out
-
 
 
 # ---- quick sanity check ----

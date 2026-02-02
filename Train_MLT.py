@@ -48,7 +48,7 @@ def plot_recons(model, val_ds, output_dir):
     model.set_masking(False)
     with torch.no_grad():
         batch_device = batch.to(device)
-        recon_batch, _ = model(batch_device)
+        recon_batch = model(batch_device)[0]
         recon_batch = recon_batch.cpu()
     batch = batch.cpu()
 
@@ -94,7 +94,7 @@ def plot_recons(model, val_ds, output_dir):
     model.eval()
     model.set_masking(False)
     with torch.no_grad():
-        recon_batch, _ = model(video_batch)
+        recon_batch = model(video_batch)[0]
         recon_batch = recon_batch.cpu()
 
     video = video.cpu()
@@ -207,8 +207,8 @@ val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=col
 
 # Model
 model = MotionLatentAE(in_c=3, init_c=8, out_c=3, latent=256, 
-                           enc_layers=2, t_layers=8, t_heads=4, t_latents=8,
-                            dec_layers=2, levels=4, skips=False)
+                           enc_layers=2, t_layers=8, t_heads=4, t_latents=16,
+                            dec_layers=2, levels=3, skips=False)
 model = model.to(device)
 print(f"Initialized MLT with {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M trainable parameters.")
 
@@ -243,18 +243,18 @@ for epoch in range(epochs):
         videos = median_blur(videos)
         
         optimizer.zero_grad()
-        x_rec, x_centroid = model(videos)
+        x_rec = model(videos)[0]
         
         mse_loss = criterion(x_rec, videos)
-        frechet_loss = criterion(x_centroid, videos)
-        loss = mse_loss + frechet_loss / videos.size(2)
+        # frechet_loss = criterion(x_centroid, videos)
+        loss = mse_loss #+ frechet_loss / videos.size(2)
         
         loss.backward()
         norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         
         train_loss += mse_loss.item() * videos.size(0)
-        p_bar.set_postfix({'MSE Loss': mse_loss.item(), 'Frechet Loss': frechet_loss.item(), 'Grad Norm': norm.item()})
+        p_bar.set_postfix({'MSE Loss': mse_loss.item(), 'Grad Norm': norm.item()})
         
     train_loss /= len(train_dl.dataset)
     train_losses.append(train_loss)
@@ -267,7 +267,7 @@ for epoch in range(epochs):
         for batch in p_bar:
             videos = batch['video'].to(device, non_blocking=True)
             videos = median_blur(videos)
-            x_rec, _ = model(videos)
+            x_rec = model(videos)[0]
             
             mse_loss = criterion(x_rec, videos)
             val_loss += mse_loss.item() * videos.size(0)
