@@ -20,7 +20,7 @@ output_dir = f"results/{date}/{timestamp}_MoLP"
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 100
+epochs = 50
 batch_size = 16
 learning_rate = 1e-4
 weight_decay = 2e-2
@@ -212,7 +212,7 @@ val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=lam
 model = MotionLatentPerceiver(in_c=3, out_c=3, init_c=8, latent=256, 
                               enc_layers=2, t_layers=12, t_heads=4, t_latents=4, 
                             dec_layers=2, levels=4, 
-                            motion_dim=2,   # 2 templates
+                            motion_dim=2,
                             masking_ratio=0.75, skips=False)
 model = model.to(device)
 print(f"Initialized MoLP with {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M trainable parameters.")

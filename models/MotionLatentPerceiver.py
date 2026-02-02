@@ -89,7 +89,7 @@ class MotionLatentPerceiver(nn.Module):
                 do_masking=not skips)
         self.conv_decoder = ConvDecoder(out_c, init_c, dec_layers, levels, skips)
 
-        self.template_mlp = nn.Sequential(
+        self.centroid_mlp = nn.Sequential(
             nn.Linear(latent, latent*2),
             nn.GELU(),
             nn.Linear(latent*2, latent))
@@ -97,13 +97,14 @@ class MotionLatentPerceiver(nn.Module):
             nn.Linear(latent, latent),
             nn.GELU(),
             nn.Linear(latent, motion_dim, bias=False))
+        self.motion_basis = nn.Parameter(torch.randn(latent, motion_dim)/(latent ** 0.5))
         self.upsampler = nn.Sequential(
             nn.ConvTranspose3d(latent, init_c * (2 ** (levels+2)), (1, 2, 2), (1, 2, 2), 0),
             nn.GELU(),
             nn.ConvTranspose3d(init_c * (2 ** (levels+2)), init_c * (2 ** (levels+1)), (1, 2, 2), (1, 2, 2), 0),
             nn.GELU(),
             nn.ConvTranspose3d(init_c * (2 ** (levels+1)), init_c * (2 ** levels), (1, 2, 2), (1, 2, 2), 0),
-            nn.GroupNorm(1, init_c * (2 ** levels)))
+            nn.GroupNorm(1, init_c * (2 ** levels), affine=False))
 
     def set_masking(self, do_masking: bool):
         self.perceiver.do_masking = do_masking
@@ -117,23 +118,20 @@ class MotionLatentPerceiver(nn.Module):
         z = self.perceiver(x_lat)   # [B, T, N-latents, latent]]
 
         # Motion components mix static templates
-        z_motion = self.motion_mlp(z[:, :, 0, :]).transpose(1, 2).unsqueeze(-1).unsqueeze(-1)
-        # First 2 dimensions are on unit circle
-        # xy = z_motion[:, :, :2]
-        # xy_norm = xy / (xy.norm(dim=-1, keepdim=True) + 1e-8)
-        # z_motion = torch.cat([xy_norm, z_motion[:, :, 2:]], dim=-1)
+        z_motion = self.motion_mlp(z[:, :, 0, :])
+        self.z_motion = z_motion  # For Visualization
 
-        # Time-Averaged templates x2
-        z_c1 = self.template_mlp(z[:, :, 1, :].mean(dim=[1], keepdim=True)).transpose(1, 2).unsqueeze(-1).unsqueeze(-1)
-        z_c2 = self.template_mlp(z[:, :, 2, :].mean(dim=[1], keepdim=True)).transpose(1, 2).unsqueeze(-1).unsqueeze(-1)
-        x_c1 = self.upsampler(z_c1)
-        x_c2 = self.upsampler(z_c2)
-        x_hat = z_motion[:, 0:1, :, :, :] * x_c1 + z_motion[:, 1:2, :, :, :] * x_c2
-        
         # self.z_motion = z_motion    # Visualization
+        Q, R = torch.linalg.qr(self.motion_basis + 1e-8, mode='reduced')
+        z_motion = z_motion @ Q.transpose(0, 1)  # [B, T, latent]
+        z_motion = z_motion.transpose(1, 2).unsqueeze(-1).unsqueeze(-1)
 
+        # Time-Averaged Centroid
+        z_centroid = self.centroid_mlp(z[:, :, 1, :].mean(dim=[1], keepdim=True)).transpose(1, 2).unsqueeze(-1).unsqueeze(-1)
+
+        x_hat = self.upsampler(z_centroid + z_motion)        
         x_rec = self.conv_decoder(x_hat, skips if self.skips else None)
-        return x_rec,
+        return x_rec, 
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
