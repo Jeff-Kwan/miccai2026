@@ -15,24 +15,24 @@ from tqdm import tqdm
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_01_31/18_22_MLT"
+load_dir = "results/2026_02_03/10_03_MLT"
 output_dir = os.path.join(load_dir, "LVSeg")
 os.makedirs(output_dir, exist_ok=True)
 
 model = MotionLatentAE(in_c=3, init_c=8, out_c=1, latent=256, 
-                           enc_layers=2, t_layers=8, t_heads=4, t_latents=8,
-                            dec_layers=2, levels=4, skips=True)
+                           enc_layers=2, t_layers=8, t_heads=4, t_latents=16,
+                            dec_layers=2, levels=3, skips=False)
 pretrained = torch.load(os.path.join(load_dir, "MLT.pth"), map_location=device)
 model = model.to(device)
 
 # freeze selected submodules first so we can detect which params are non-trainable
-# model.encoder.requires_grad_(False)
-# model.transformer.requires_grad_(False)
+model.encoder.requires_grad_(False)
+model.transformer.requires_grad_(False)
 # model.centroid_mlp.requires_grad_(False)
 # model.motion_mlp.requires_grad_(False)
 # model.motion_basis.requires_grad_(False)
 model_dict = model.state_dict()
-# frozen_param_names = {name for name, p in model.named_parameters() if not p.requires_grad}
+frozen_param_names = {name for name, p in model.named_parameters() if not p.requires_grad}
 matched = {k: v for k, v in pretrained.items() if k in model_dict and v.shape == model_dict[k].shape}# and k in frozen_param_names}
 model_dict.update(matched)
 model.load_state_dict(model_dict)
@@ -154,7 +154,7 @@ def save_examples_echo_dyna(model, val_ds, out_dir, results=5):
 
         image = item["video"][:, frame, :, :].unsqueeze(0).unsqueeze(2).to(device)  # (1,3,1,H,W)
         with torch.inference_mode():
-            output, _ = model(image)  # logits
+            output = model(image)[0]  # logits
 
         pred = torch.sigmoid(output).detach().squeeze().cpu().numpy()   # (H,W)
         true_mask = mask.detach().cpu().squeeze().numpy()               # (H,W)
@@ -260,7 +260,7 @@ def test_model(model, test_dl):
             masks = batch["masks"].to(device, non_blocking=True)
             idx = batch["keyframe_idx"]
 
-            logits, _ = model(imgs)
+            logits = model(imgs)[0]
             logits = torch.stack([logits_i[:, idx_i, :, :] for logits_i, idx_i in zip(logits, idx)]).squeeze()
             batch_metrics = calculate_metrics_from_logits(logits, masks)
 
@@ -465,7 +465,7 @@ for epoch in range(epochs):
         idx = batch["keyframe_idx"]
 
         optimizer.zero_grad(set_to_none=True)
-        logits, _ = model(imgs)
+        logits = model(imgs)[0]
         logits = torch.stack([logits_i[:, idx_i, :, :] for logits_i, idx_i in zip(logits, idx)]).squeeze()
         focal = focal_loss(logits, masks)
         dloss = dice_loss(logits, masks)
@@ -500,7 +500,7 @@ for epoch in range(epochs):
             masks = batch["masks"].to(device, non_blocking=True)
             idx = batch["keyframe_idx"]
 
-            logits, _ = model(imgs)
+            logits = model(imgs)[0]
             logits = torch.stack([logits_i[:, idx_i, :, :] for logits_i, idx_i in zip(logits, idx)]).squeeze()
             focal = focal_loss(logits, masks)
             dloss = dice_loss(logits, masks)

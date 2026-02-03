@@ -20,7 +20,7 @@ output_dir = f"results/{date}/{timestamp}_MLT"
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 100
+epochs = 50
 batch_size = 8
 learning_rate = 1e-4
 weight_decay = 2e-2

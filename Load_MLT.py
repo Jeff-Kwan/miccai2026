@@ -10,11 +10,11 @@ import imageio
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_01_31/18_22_MLT"
+load_dir = "results/2026_02_02/16_32_MLT"
 
 model = MotionLatentAE(in_c=3, init_c=8, out_c=3, latent=256, 
-                           enc_layers=2, t_layers=8, t_heads=4, t_latents=8,
-                            dec_layers=2, levels=4, skips=False)
+                           enc_layers=2, t_layers=8, t_heads=4, t_latents=16,
+                            dec_layers=2, levels=3, skips=False)
 model = model.to(device)
 model.load_state_dict(torch.load(os.path.join(load_dir, "MLT.pth"), map_location=device))
 model = model.to(device)
@@ -34,23 +34,20 @@ video = val_ds[idx]['video'].to(device).unsqueeze(0)  # [1, C, T, H, W]
 _, C, T, H, W = video.shape
 with torch.inference_mode():
     if T <= 64:
-        reconstruction, centroid = model(video)
+        reconstruction = model(video)[0]
         z_motion = model.z_motion.cpu().numpy().squeeze()
     else:
         # Process long videos in chunks
         chunk_size = 64
         reconstruction_chunks = []
-        centroid_chunks = []
         z_motion_chunks = []
         for start in range(0, T, chunk_size):
             end = min(start + chunk_size, T)
             video_chunk = video[:, :, start:end, :, :]
-            rec_chunk, cent_chunk = model(video_chunk)
+            rec_chunk = model(video_chunk)[0]
             reconstruction_chunks.append(rec_chunk)
-            centroid_chunks.append(cent_chunk)
             z_motion_chunks.append(model.z_motion.squeeze().cpu().numpy())
         reconstruction = torch.cat(reconstruction_chunks, dim=2)
-        centroid = torch.cat(centroid_chunks, dim=2)
         z_motion = np.concatenate(z_motion_chunks, axis=1).squeeze()
 
 output_dir = os.path.join(load_dir, "reconstructions")
@@ -63,20 +60,17 @@ duration = 1.0 / fps  # seconds per frame for GIF
 # Prepare tensors
 video = video.squeeze(0).permute(1, 2, 3, 0)                 # [T, H, W, C]
 reconstruction = reconstruction.squeeze(0).permute(1, 2, 3, 0)  # [T, H, W, C]
-centroid = centroid.squeeze(0).permute(1, 2, 3, 0)          # [T, H, W, C]
 video = (video + 1).clip(0, 1) * 255
 reconstruction = (reconstruction + 1).clip(0, 1) * 255
-centroid = (centroid + 1).clip(0, 1) * 255
 
 video = video.cpu().numpy().astype(np.uint8)
 reconstruction = reconstruction.cpu().numpy().astype(np.uint8)
-centroid = centroid.cpu().numpy().astype(np.uint8)
 
 T, H, W, C = video.shape
 frames = []
 
 for t in range(T):
-    fig, axs = plt.subplots(1, 3, figsize=(12, 4))
+    fig, axs = plt.subplots(1, 2, figsize=(8, 4))
 
     axs[0].imshow(video[t])
     axs[0].set_title("Original")
@@ -85,10 +79,6 @@ for t in range(T):
     axs[1].imshow(reconstruction[t])
     axs[1].set_title("Reconstruction")
     axs[1].axis("off")
-
-    axs[2].imshow(centroid[t])
-    axs[2].set_title("Centroid")
-    axs[2].axis("off")
 
     plt.tight_layout()
 
