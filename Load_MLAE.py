@@ -11,11 +11,10 @@ from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_01/15_06_MLAE"
+load_dir = "results/2026_02_02/16_53_MLAE"
 
-model = MotionLatentAE(in_c=3, out_c=3, latent=512, enc_layers=4, dec_layers=2, levels=6,
-                       motion_dim=3, # Unit Circle + 1, 2 DoFs
-                       skips=False)
+model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, 
+                        dec_layers=4, levels=5, motion_dim=2, skips=False)
 model = model.to(device)
 model.load_state_dict(torch.load(os.path.join(load_dir, "MLAE.pth"), map_location=device))
 model = model.to(device)
@@ -34,25 +33,8 @@ video = val_ds[idx]['video'].to(device).unsqueeze(0)  # [1, C, T, H, W]
 # Reconstruction
 _, C, T, H, W = video.shape
 with torch.inference_mode():
-    if T <= 64:
-        reconstruction, centroid = model(video)
-        z_motion = model.z_motion.cpu().numpy().squeeze()
-    else:
-        # Process long videos in chunks
-        chunk_size = 64
-        reconstruction_chunks = []
-        centroid_chunks = []
-        z_motion_chunks = []
-        for start in range(0, T, chunk_size):
-            end = min(start + chunk_size, T)
-            video_chunk = video[:, :, start:end, :, :]
-            rec_chunk, cent_chunk = model(video_chunk)
-            reconstruction_chunks.append(rec_chunk)
-            centroid_chunks.append(cent_chunk)
-            z_motion_chunks.append(model.z_motion.squeeze().cpu().numpy())
-        reconstruction = torch.cat(reconstruction_chunks, dim=2)
-        centroid = torch.cat(centroid_chunks, dim=2)
-        z_motion = np.concatenate(z_motion_chunks, axis=0).squeeze().transpose()
+    reconstruction, centroid = model(video)
+    z_motion = model.z_motion.cpu().numpy().squeeze()
 
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
@@ -106,51 +88,33 @@ gif_path = os.path.join(output_dir, f"{idx}-reconstruction.gif")
 imageio.mimsave(gif_path, frames, duration=duration)
 
 
-def plot_colormap_trajectory(x, y, z, title, xlabel, ylabel, zlabel, save_path,
+def plot_colormap_trajectory(x, y, title, xlabel, ylabel, save_path,
                              cmap="coolwarm"):
     """
-    x, y, z: arrays of shape (T,)
+    x, y: arrays of shape (T,)
     """
+    points = np.array([x, y]).T.reshape(-1, 1, 2)
+    segments = np.concatenate([points[:-1], points[1:]], axis=1)
 
-    pts = np.array([x, y, z]).T.reshape(-1, 1, 3)
-    segments = np.concatenate([pts[:-1], pts[1:]], axis=1)  # (T-1, 2, 3)
+    t = np.linspace(0, 1, len(x))  # normalized time
 
-    t = np.linspace(0, 1, len(x))
-    t_seg = 0.5 * (t[:-1] + t[1:]) if len(t) > 1 else t  # color per segment
+    lc = LineCollection(segments, cmap=cmap)
+    lc.set_array(t)
+    lc.set_linewidth(2)
 
-    cmap_obj = plt.get_cmap(cmap)
-    colors = cmap_obj(t_seg)
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.add_collection(lc)
+    ax.scatter(x[0], y[0], color="blue", label="t=0", zorder=3)
+    ax.scatter(x[-1], y[-1], color="red", label="t=T", zorder=3)
 
-    lc = Line3DCollection(segments, colors=colors, linewidths=2)
-
-    fig = plt.figure(figsize=(7, 6))
-    ax = fig.add_subplot(111, projection="3d")
-    ax.add_collection3d(lc)
-
-    ax.scatter(x[0], y[0], z[0], color="blue", label="t=0", s=40, zorder=3)
-    ax.scatter(x[-1], y[-1], z[-1], color="red", label="t=T", s=40, zorder=3)
-
-    # handle degenerate ranges
-    def _pad_minmax(arr):
-        mn, mx = np.min(arr), np.max(arr)
-        if mn == mx:
-            return mn - 0.5, mx + 0.5
-        return mn, mx
-
-    ax.set_xlim(*_pad_minmax(x))
-    ax.set_ylim(*_pad_minmax(y))
-    ax.set_zlim(*_pad_minmax(z))
-
+    ax.set_xlim(x.min(), x.max())
+    ax.set_ylim(y.min(), y.max())
     ax.set_title(title)
     ax.set_xlabel(xlabel)
     ax.set_ylabel(ylabel)
-    ax.set_zlabel(zlabel)
     ax.legend()
 
-    # colorbar
-    sm = plt.cm.ScalarMappable(cmap=cmap_obj)
-    sm.set_array(t)
-    cbar = fig.colorbar(sm, ax=ax, shrink=0.6, pad=0.1)
+    cbar = plt.colorbar(lc, ax=ax)
     cbar.set_label("Normalized time")
 
     plt.savefig(save_path, dpi=300, bbox_inches="tight")

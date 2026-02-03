@@ -20,7 +20,7 @@ os.makedirs(output_dir, exist_ok=True)
 # Training Parameters
 epochs = 100
 batch_size = 16
-learning_rate = 3e-4
+learning_rate = 1e-4
 weight_decay = 1e-2
 max_frames = 64
 
@@ -177,9 +177,8 @@ val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=col
 
 
 # Model
-model = MotionLatentAE(in_c=3, out_c=3, latent=512, enc_layers=4, dec_layers=2, levels=6,
-                       motion_dim=3, # Unit Circle + 1, 2 DoFs
-                       skips=False)
+model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, 
+                        dec_layers=4, levels=5, motion_dim=2, skips=False)
 model = model.to(device)
 print(f"Initialized MLAE with {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M trainable parameters.")
 

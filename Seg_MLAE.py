@@ -15,11 +15,12 @@ from tqdm import tqdm
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_02/05_09_MLAE"
+load_dir = "results/2026_02_02/16_53_MLAE"
 output_dir = os.path.join(load_dir, "LVSeg")
 os.makedirs(output_dir, exist_ok=True)
 
-model = MotionLatentAE(in_c=3, out_c=1, latent=512, enc_layers=4, dec_layers=2, levels=6, skips=True)
+model = MotionLatentAE(in_c=3, out_c=1, latent=256, enc_layers=4, 
+                        dec_layers=4, levels=5, motion_dim=2, skips=True)
 pretrained = torch.load(os.path.join(load_dir, "MLAE.pth"), map_location=device)
 model_dict = model.state_dict()
 matched = {k: v for k, v in pretrained.items() if k in model_dict and v.shape == model_dict[k].shape}
