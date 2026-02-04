@@ -41,7 +41,7 @@ class ConvEncoder(nn.Module):
         super(ConvEncoder, self).__init__()
         init_c = latent // (2 ** levels)
         self.levels = levels
-        self.in_conv = nn.Conv3d(in_c, init_c, (1, 3, 3), 1, (0, 1, 1))
+        self.in_conv = nn.Conv3d(in_c, init_c, (1, 3, 3), (1, 2, 2), (0, 1, 1))
 
         level_blocks = {}; downs = {}
         for level in range(levels):
@@ -90,7 +90,7 @@ class ConvDecoder(nn.Module):
         self.ups = nn.ModuleDict(ups)
         self.level_blocks = nn.ModuleDict(level_blocks)
         self.merges = nn.ModuleDict(merges)
-        self.out_conv = nn.Conv3d(init_c, out_c, 1, 1, 0)
+        self.out_conv = nn.ConvTranspose3d(init_c, out_c, (1, 2, 2), (1, 2, 2), 0)
 
         
 
@@ -118,16 +118,12 @@ class MotionLatentAE(nn.Module):
             nn.Linear(latent, latent*2),
             nn.GELU(),
             nn.Linear(latent*2, motion_dim, bias=False))
-        self.motion_basis = nn.ParameterList([
-            nn.Parameter(torch.randn(lc, motion_dim) * 0.01)
-            for lc in [latent // (2 ** i) for i in range(levels+1)]])
+        self.motion_basis = nn.Parameter(torch.randn(latent, motion_dim) * 0.01)
         
-        self.centroid_mlps = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv3d(lc, lc*4, 1, 1, 0),
+        self.centroid_mlps = nn.Sequential(
+                nn.Conv3d(latent, latent*4, 1, 1, 0),
                 nn.GELU(),
-                nn.Conv3d(lc*4, lc, 1, 1, 0))
-            for lc in [latent // (2 ** i) for i in range(levels+1)]])
+                nn.Conv3d(latent*4, latent, 1, 1, 0))
         
 
     def forward(self, x):
@@ -138,16 +134,19 @@ class MotionLatentAE(nn.Module):
         z_motion = self.motion_mlp(skips[-1].mean(dim=[3,4]).transpose(1, 2))  # [B, T, latent]
         self.z_motion = z_motion    # Visualization
 
-        for l in range(self.levels + 1):
-            # Orthonormal motion basis
-            Q, _ = torch.linalg.qr(self.motion_basis[l] + 1e-8, mode='reduced')
-            motion = (z_motion @ Q.T).transpose(1, 2).unsqueeze(-1).unsqueeze(-1)
+        # for l in range(self.levels + 1):
+        # Orthonormal motion basis
+        Q, _ = torch.linalg.qr(self.motion_basis + 1e-8, mode='reduced')
+        motion = (z_motion @ Q.T).transpose(1, 2).unsqueeze(-1).unsqueeze(-1)
 
-            # Static structural centroid
-            centroid = self.centroid_mlps[l](skips[self.levels-l].mean(dim=2, keepdim=True))
+        # Static structural centroid
+        centroid = self.centroid_mlps(skips[-1].mean(dim=2, keepdim=True))
 
-            # Final features
-            skips[self.levels-l] = centroid + motion
+        # Final features
+        skips[-1] = centroid + motion
+
+        for l in range(self.levels):
+            skips[self.levels-1-l] = skips[self.levels-1-l].mean(dim=2, keepdim=True).expand(-1, -1, T, -1, -1)
 
         x_rec = self.decoder(skips)
         return x_rec
@@ -156,9 +155,9 @@ class MotionLatentAE(nn.Module):
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, 
-                           dec_layers=2, levels=5, motion_dim=2)
+                           dec_layers=2, levels=4, motion_dim=2)
     model = model.to(device)
-    x = torch.randn(8, 3, 64, 128, 128, device=device)  # [B, C, T, H, W]
+    x = torch.randn(16, 3, 128, 128, 128, device=device)  # [B, C, T, H, W]
 
     # Profile memory usage
     torch.cuda.empty_cache() if torch.cuda.is_available() else None

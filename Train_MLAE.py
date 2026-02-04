@@ -18,12 +18,17 @@ timestamp = datetime.now().strftime("%H_%M")
 output_dir = f"results/{date}/{timestamp}_MLAE"
 os.makedirs(output_dir, exist_ok=True)
 
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.allow_tf32 = True
+torch.set_float32_matmul_precision('high')
+
 # Training Parameters
-epochs = 50
-batch_size = 8
+epochs = 200
+batch_size = 16
 learning_rate = 1e-4
 weight_decay = 1e-2
-max_frames = 64
+max_frames = 128
+latentL2 = 1e-4
 
 # Augmentations
 class FPSJitter(nn.Module):
@@ -420,7 +425,7 @@ def collate_fn(batch):
     return {'video': videos}
 
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, 
-                      num_workers=10, pin_memory=True, persistent_workers=True)
+                      num_workers=16, pin_memory=True, persistent_workers=True)
 val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=6)
 
 
@@ -452,16 +457,15 @@ for epoch in range(epochs):
 
         x_rec = model(aug_videos)
         
-        # Target denoised with median blur
-        target = median_blur(videos)
-        loss = criterion(x_rec, target)
+        mse_loss = criterion(x_rec, videos)
         
+        loss = mse_loss
         loss.backward()
         norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         
         train_loss += loss.item() * videos.size(0)
-        p_bar.set_postfix({'MSE Loss': loss.item(), 'Grad Norm': norm.item()})
+        p_bar.set_postfix({'MSE Loss': mse_loss.item(), 'Grad Norm': norm.item()})
         
     train_loss /= len(train_dl.dataset)
     train_losses.append(train_loss)
