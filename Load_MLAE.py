@@ -5,16 +5,16 @@ import os
 import random
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
+import matplotlib.gridspec as gridspec
 import numpy as np
 import imageio
-from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_02/16_53_MLAE"
+load_dir = "results/2026_02_03/19_11_MLAE"
 
 model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, 
-                        dec_layers=4, levels=5, motion_dim=2, skips=False)
+                           dec_layers=2, levels=5, motion_dim=2)
 model = model.to(device)
 model.load_state_dict(torch.load(os.path.join(load_dir, "MLAE.pth"), map_location=device))
 model = model.to(device)
@@ -33,7 +33,7 @@ video = val_ds[idx]['video'].to(device).unsqueeze(0)  # [1, C, T, H, W]
 # Reconstruction
 _, C, T, H, W = video.shape
 with torch.inference_mode():
-    reconstruction, centroid = model(video)
+    reconstruction = model(video)
     z_motion = model.z_motion.cpu().numpy().squeeze()
 
 output_dir = os.path.join(load_dir, "reconstructions")
@@ -46,20 +46,17 @@ duration = 1.0 / fps  # seconds per frame for GIF
 # Prepare tensors
 video = video.squeeze(0).permute(1, 2, 3, 0)                 # [T, H, W, C]
 reconstruction = reconstruction.squeeze(0).permute(1, 2, 3, 0)  # [T, H, W, C]
-centroid = centroid.squeeze(0).permute(1, 2, 3, 0)          # [T, H, W, C]
 video = (video + 1).clip(0, 1) * 255
 reconstruction = (reconstruction + 1).clip(0, 1) * 255
-centroid = (centroid + 1).clip(0, 1) * 255
 
 video = video.cpu().numpy().astype(np.uint8)
 reconstruction = reconstruction.cpu().numpy().astype(np.uint8)
-centroid = centroid.cpu().numpy().astype(np.uint8)
 
 T, H, W, C = video.shape
 frames = []
 
 for t in range(T):
-    fig, axs = plt.subplots(1, 3, figsize=(12, 4))
+    fig, axs = plt.subplots(1, 2, figsize=(8, 4))
 
     axs[0].imshow(video[t])
     axs[0].set_title("Original")
@@ -68,11 +65,6 @@ for t in range(T):
     axs[1].imshow(reconstruction[t])
     axs[1].set_title("Reconstruction")
     axs[1].axis("off")
-
-    axs[2].imshow(centroid[t])
-    axs[2].set_title("Centroid")
-    axs[2].axis("off")
-
     plt.tight_layout()
 
     # Render figure to numpy array
@@ -88,11 +80,18 @@ gif_path = os.path.join(output_dir, f"{idx}-reconstruction.gif")
 imageio.mimsave(gif_path, frames, duration=duration)
 
 
-def plot_colormap_trajectory(x, y, title, xlabel, ylabel, save_path,
-                             cmap="coolwarm"):
+def plot_colormap_trajectory(x, y, esed, title, xlabel, ylabel, save_path,
+                             cmap="coolwarm", skip_init=8):
     """
     x, y: arrays of shape (T,)
     """
+    es, ed = esed  # end-systole, end-diastole indices
+    ed_idx = int(ed) - skip_init
+    es_idx = int(es) - skip_init
+    assert 0 <= ed_idx < len(x) and 0 <= es_idx < len(x), "ES/ED indices out of bounds after skipping initial frames."
+    x = x[skip_init:]
+    y = y[skip_init:]
+
     points = np.array([x, y]).T.reshape(-1, 1, 2)
     segments = np.concatenate([points[:-1], points[1:]], axis=1)
 
@@ -102,30 +101,80 @@ def plot_colormap_trajectory(x, y, title, xlabel, ylabel, save_path,
     lc.set_array(t)
     lc.set_linewidth(2)
 
-    fig, ax = plt.subplots(figsize=(6, 6))
-    ax.add_collection(lc)
-    ax.scatter(x[0], y[0], color="blue", label="t=0", zorder=3)
-    ax.scatter(x[-1], y[-1], color="red", label="t=T", zorder=3)
+    # Layout: stack trajectory, D1 vs time, D2 vs time vertically
+    fig = plt.figure(figsize=(6, 12))
+    gs0 = gridspec.GridSpec(3, 1, height_ratios=[2, 1, 1], hspace=0.35)
 
-    ax.set_xlim(x.min(), x.max())
-    ax.set_ylim(y.min(), y.max())
-    ax.set_title(title)
-    ax.set_xlabel(xlabel)
-    ax.set_ylabel(ylabel)
-    ax.legend()
+    # Wrapper to keep later indexing (gs[1,0], gs[1,1]) working while stacking vertically.
+    class GSWrapper:
+        def __init__(self, gs):
+            self.gs = gs
+        def __getitem__(self, key):
+            # map (1,1) used later to the third row so the two component plots end up stacked
+            if key == (1, 1):
+                return self.gs[2, 0]
+            return self.gs[key]
 
-    cbar = plt.colorbar(lc, ax=ax)
+    gs = GSWrapper(gs0)
+
+    ax_traj = fig.add_subplot(gs[0, :])
+    ax_traj.add_collection(lc)
+    ax_traj.scatter(x[0], y[0], color="blue", label="t=0", zorder=3)
+    ax_traj.scatter(x[-1], y[-1], color="red", label="t=T", zorder=3)
+
+    ax_traj.plot(x[ed_idx], y[ed_idx], marker="x", color="orange", markersize=8, markeredgewidth=2, label="ED")
+    ax_traj.plot(x[es_idx], y[es_idx], marker="x", color="green", markersize=8, markeredgewidth=2, label="ES")
+
+    pad_x = (x.max() - x.min()) * 0.05 if x.max() > x.min() else 1.0
+    pad_y = (y.max() - y.min()) * 0.05 if y.max() > y.min() else 1.0
+    ax_traj.set_xlim(x.min() - pad_x, x.max() + pad_x)
+    ax_traj.set_ylim(y.min() - pad_y, y.max() + pad_y)
+    ax_traj.set_title(title)
+    ax_traj.set_xlabel(xlabel)
+    ax_traj.set_ylabel(ylabel)
+    ax_traj.legend()
+    cbar = fig.colorbar(lc, ax=ax_traj, fraction=0.046, pad=0.04)
     cbar.set_label("Normalized time")
+
+    # Component plots under the trajectory -> use PCA on (x,y) and plot PC1/PC2 over time
+    D = np.vstack([x, y]).T  # [T, 2]
+    D_centered = D - D.mean(axis=0)
+    # PCA via SVD
+    U, S, Vt = np.linalg.svd(D_centered, full_matrices=False)
+    pcs = D_centered @ Vt.T  # projections onto principal components, shape [T,2]
+    var_explained = (S**2) / (len(x) - 1)
+    var_ratio = var_explained / var_explained.sum()  
+
+    ax_x = fig.add_subplot(gs[1, 0])
+    ax_x.scatter(t, pcs[:, 0], color="black", s=1)
+    ax_x.set_xlabel("Normalized time")
+    ax_x.set_ylabel(f"PC1 ({var_ratio[0]*100:.1f}% var)")
+    ax_x.grid(True, linestyle=":", alpha=0.6)
+
+    # Plot orange cross for ed and green cross for es on PC1
+    ax_x.plot(t[ed_idx], pcs[ed_idx, 0], marker="x", color="orange", markersize=8, markeredgewidth=2)
+    ax_x.plot(t[es_idx], pcs[es_idx, 0], marker="x", color="green", markersize=8, markeredgewidth=2)
+
+    ax_y = fig.add_subplot(gs[1, 1])
+    ax_y.scatter(t, pcs[:, 1], color="black", s=1)
+    ax_y.set_xlabel("Normalized time")
+    ax_y.set_ylabel(f"PC2 ({var_ratio[1]*100:.1f}% var)")
+    ax_y.grid(True, linestyle=":", alpha=0.6)
+
+    # Plot orange cross for ed and green cross for es on PC2
+    ax_y.plot(t[ed_idx], pcs[ed_idx, 1], marker="x", color="orange", markersize=8, markeredgewidth=2)
+    ax_y.plot(t[es_idx], pcs[es_idx, 1], marker="x", color="green", markersize=8, markeredgewidth=2)
 
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 plot_colormap_trajectory(
-    z_motion[0, :],
-    z_motion[1, :],
+    z_motion[:, 0],
+    z_motion[:, 1],
+    esed=(val_ds[idx]['metadata']['ESV'], val_ds[idx]['metadata']['EDV']),
     title="z_motion Trajectory",
     xlabel="D1",
     ylabel="D2",
     save_path=os.path.join(output_dir, f"{idx}-z_motion_trajectory.png"),
-    cmap="coolwarm"
-)
+    cmap="coolwarm",
+    skip_init=8)
