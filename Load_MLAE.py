@@ -81,16 +81,13 @@ imageio.mimsave(gif_path, frames, duration=duration)
 
 
 def plot_colormap_trajectory(x, y, esed, title, xlabel, ylabel, save_path,
-                             cmap="coolwarm", skip_init=8):
+                             cmap="coolwarm"):
     """
     x, y: arrays of shape (T,)
     """
     es, ed = esed  # end-systole, end-diastole indices
-    ed_idx = int(ed) - skip_init
-    es_idx = int(es) - skip_init
-    assert 0 <= ed_idx < len(x) and 0 <= es_idx < len(x), "ES/ED indices out of bounds after skipping initial frames."
-    x = x[skip_init:]
-    y = y[skip_init:]
+    ed_idx = int(ed)
+    es_idx = int(es)
 
     points = np.array([x, y]).T.reshape(-1, 1, 2)
     segments = np.concatenate([points[:-1], points[1:]], axis=1)
@@ -136,34 +133,21 @@ def plot_colormap_trajectory(x, y, esed, title, xlabel, ylabel, save_path,
     cbar = fig.colorbar(lc, ax=ax_traj, fraction=0.046, pad=0.04)
     cbar.set_label("Normalized time")
 
-    # Component plots under the trajectory -> use PCA on (x,y) and plot PC1/PC2 over time
-    D = np.vstack([x, y]).T  # [T, 2]
-    D_centered = D - D.mean(axis=0)
-    # PCA via SVD
-    U, S, Vt = np.linalg.svd(D_centered, full_matrices=False)
-    pcs = D_centered @ Vt.T  # projections onto principal components, shape [T,2]
-    var_explained = (S**2) / (len(x) - 1)
-    var_ratio = var_explained / var_explained.sum()  
-
     ax_x = fig.add_subplot(gs[1, 0])
-    ax_x.scatter(t, pcs[:, 0], color="black", s=1)
+    ax_x.scatter(t, x, color="black", s=1)
     ax_x.set_xlabel("Normalized time")
-    ax_x.set_ylabel(f"PC1 ({var_ratio[0]*100:.1f}% var)")
+    ax_x.set_ylabel("D1")
     ax_x.grid(True, linestyle=":", alpha=0.6)
-
-    # Plot orange cross for ed and green cross for es on PC1
-    ax_x.plot(t[ed_idx], pcs[ed_idx, 0], marker="x", color="orange", markersize=8, markeredgewidth=2)
-    ax_x.plot(t[es_idx], pcs[es_idx, 0], marker="x", color="green", markersize=8, markeredgewidth=2)
+    ax_x.plot(t[ed_idx], x[ed_idx], marker="x", color="orange", markersize=8, markeredgewidth=2)
+    ax_x.plot(t[es_idx], x[es_idx], marker="x", color="green", markersize=8, markeredgewidth=2)
 
     ax_y = fig.add_subplot(gs[1, 1])
-    ax_y.scatter(t, pcs[:, 1], color="black", s=1)
+    ax_y.scatter(t, y, color="black", s=1)
     ax_y.set_xlabel("Normalized time")
-    ax_y.set_ylabel(f"PC2 ({var_ratio[1]*100:.1f}% var)")
+    ax_y.set_ylabel("D2")
     ax_y.grid(True, linestyle=":", alpha=0.6)
-
-    # Plot orange cross for ed and green cross for es on PC2
-    ax_y.plot(t[ed_idx], pcs[ed_idx, 1], marker="x", color="orange", markersize=8, markeredgewidth=2)
-    ax_y.plot(t[es_idx], pcs[es_idx, 1], marker="x", color="green", markersize=8, markeredgewidth=2)
+    ax_y.plot(t[ed_idx], y[ed_idx], marker="x", color="orange", markersize=8, markeredgewidth=2)
+    ax_y.plot(t[es_idx], y[es_idx], marker="x", color="green", markersize=8, markeredgewidth=2)
 
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -176,5 +160,4 @@ plot_colormap_trajectory(
     xlabel="D1",
     ylabel="D2",
     save_path=os.path.join(output_dir, f"{idx}-z_motion_trajectory.png"),
-    cmap="coolwarm",
-    skip_init=8)
+    cmap="coolwarm")
