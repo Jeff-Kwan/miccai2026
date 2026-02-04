@@ -15,12 +15,12 @@ from tqdm import tqdm
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_02/16_53_MLAE"
+load_dir = "results/2026_02_03/19_11_MLAE"
 output_dir = os.path.join(load_dir, "LVSeg")
 os.makedirs(output_dir, exist_ok=True)
 
 model = MotionLatentAE(in_c=3, out_c=1, latent=256, enc_layers=4, 
-                        dec_layers=4, levels=5, motion_dim=2, skips=True)
+                           dec_layers=2, levels=5, motion_dim=2)
 pretrained = torch.load(os.path.join(load_dir, "MLAE.pth"), map_location=device)
 model_dict = model.state_dict()
 matched = {k: v for k, v in pretrained.items() if k in model_dict and v.shape == model_dict[k].shape}
@@ -28,7 +28,7 @@ model_dict.update(matched)
 model.load_state_dict(model_dict)
 model = model.to(device)
 model.encoder.requires_grad_(False)
-model.centroid_mlp.requires_grad_(False)
+model.centroid_mlps.requires_grad_(False)
 model.motion_mlp.requires_grad_(False)
 model.motion_basis.requires_grad_(False)
 
@@ -53,26 +53,61 @@ comments = [
 ]
 
 
-# augmentations = v2.Compose([
-#     v2.RandomHorizontalFlip(p=0.5),
-#     v2.RandomApply([
-#         v2.RandomAffine(
-#             degrees=30,
-#             translate=(0.1, 0.1),
-#             scale=(0.9, 1.2),
-#             interpolation=InterpolationMode.BILINEAR,
-#         ),
-#     ], p=0.5),
-#     v2.RandomApply([
-#         v2.GaussianBlur(kernel_size=7, sigma=(0.25, 1.5))
-#     ], p=0.4),
-#     v2.RandomApply([
-#         v2.GaussianNoise(0, 0.01)
-#     ], p=0.4),
-#     v2.RandomApply([
-#         v2.ColorJitter(brightness=0.2, contrast=0.2)
-#     ], p=0.4)
-# ])
+class RandomGamma(nn.Module):
+    def __init__(self, gamma=(0.7, 1.5)):
+        super().__init__()
+        self.gamma = gamma
+
+    def forward(self, x):
+        # assume x in [-1,1]
+        x = (x + 1) * 0.5           # -> [0,1]
+        g = torch.empty(1, device=x.device).uniform_(*self.gamma)
+        return (x.pow(g) * 2 - 1).clamp(-1.0, 1.0)
+
+class ClipBrightnessContrast(nn.Module):
+    def __init__(self, brightness=0.3, contrast=0.2):
+        super().__init__()
+        self.b = brightness
+        self.c = contrast
+
+    def forward(self, x):
+        # x: [B, T, C, H, W]
+        b = torch.empty(1, device=x.device).uniform_(-self.b, self.b)
+        c = torch.empty(1, device=x.device).uniform_(1 - self.c, 1 + self.c)
+        mean = x.mean(dim=(-2, -1), keepdim=True)  # per B,T,C over H,W
+        return ((x - mean) * c + mean + b).clamp(-1.0, 1.0)
+
+class SpeckleNoise(torch.nn.Module):
+    def __init__(self, std=(0.02, 0.1)):
+        super().__init__()
+        self.std = std
+
+    def forward(self, x):
+        # assume x in [-1,1]
+        x = (x + 1) * 0.5           # -> [0,1]
+        std = torch.empty(1, device=x.device).uniform_(*self.std)
+        noise = torch.randn_like(x) * std
+        x = (x + x * noise).clamp(0.0, 1.0)
+        return x * 2 - 1            # back to [-1,1]
+
+augmentations = v2.Compose([
+    v2.RandomApply([# Intensities
+        v2.RandomChoice([
+            v2.RandomChoice([# Intensity distribution
+                ClipBrightnessContrast(brightness=0.3, contrast=0.2),
+                RandomGamma(gamma=(0.7, 1.5))]),
+            v2.RandomChoice([# Sharpness / Blur
+                v2.RandomAdjustSharpness(sharpness_factor=0.5, p=1),
+                v2.GaussianBlur(kernel_size=7, sigma=(0.25, 1.5))]),
+            v2.RandomChoice([# Noise
+                v2.GaussianNoise(0, 0.05),
+                SpeckleNoise(std=(0.02, 0.1))])
+        ])
+    ], p=0.5),
+    v2.RandomApply([# Masking
+        v2.RandomErasing(p=1)
+    ], p=0.3),
+])
 
 model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
 print(f"Initialized ConvSegNet with {model_size/1e6:.2f}M trainable parameters.")
@@ -138,7 +173,7 @@ def save_examples_echo_dyna(model, val_ds, out_dir, results=5):
 
         image = item["video"][:, frame, :, :].unsqueeze(0).unsqueeze(2).to(device)  # (1,3,1,H,W)
         with torch.inference_mode():
-            output, _ = model(image)  # logits
+            output = model(image)  # logits
 
         pred = torch.sigmoid(output).detach().squeeze().cpu().numpy()   # (H,W)
         true_mask = mask.detach().cpu().squeeze().numpy()               # (H,W)
@@ -244,7 +279,7 @@ def test_model(model, test_dl):
             masks = batch["masks"].to(device, non_blocking=True)
             idx = batch["keyframe_idx"]
 
-            logits, _ = model(imgs)
+            logits = model(imgs)
             logits = torch.stack([logits_i[:, idx_i, :, :] for logits_i, idx_i in zip(logits, idx)]).squeeze()
             batch_metrics = calculate_metrics_from_logits(logits, masks)
 
@@ -444,7 +479,8 @@ for epoch in range(epochs):
         idx = batch["keyframe_idx"]
 
         optimizer.zero_grad(set_to_none=True)
-        logits, _ = model(imgs)
+        imgs = augmentations(imgs.transpose(1, 2)).transpose(1, 2).contiguous()
+        logits = model(imgs)
         logits = torch.stack([logits_i[:, idx_i, :, :] for logits_i, idx_i in zip(logits, idx)]).squeeze()
         focal = focal_loss(logits, masks)
         dloss = dice_loss(logits, masks)
@@ -479,7 +515,7 @@ for epoch in range(epochs):
             masks = batch["masks"].to(device, non_blocking=True)
             idx = batch["keyframe_idx"]
 
-            logits, _ = model(imgs)
+            logits = model(imgs)
             logits = torch.stack([logits_i[:, idx_i, :, :] for logits_i, idx_i in zip(logits, idx)]).squeeze()
             focal = focal_loss(logits, masks)
             dloss = dice_loss(logits, masks)

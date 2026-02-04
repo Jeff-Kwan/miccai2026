@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from torchvision.transforms import v2
 from tqdm import tqdm
 
 from datahandling.EchoDynaDataset import load_echonet_dynamic_datasets
@@ -18,12 +19,259 @@ output_dir = f"results/{date}/{timestamp}_MLAE"
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 100
-batch_size = 16
+epochs = 50
+batch_size = 8
 learning_rate = 1e-4
 weight_decay = 1e-2
 max_frames = 64
 
+# Augmentations
+class FPSJitter(nn.Module):
+    def __init__(self, k, min_keep=1, p=0.5):
+        super().__init__()
+        self.p = p
+        self.k = k
+        self.min_keep = min_keep
+
+    def forward(self, x):
+        if torch.rand(1).item() > self.p:
+            return x
+        # x: [B, C, T, H, W]
+        B, C, T, H, W = x.shape
+        if self.min_keep >= T:
+            return x
+        k = torch.rand(1, device=x.device) * (self.k[1] - self.k[0]) + self.k[0]
+        keep = (torch.rand(T, device=x.device) > k)  # [T] bool
+        keep = keep.to(torch.bool)
+        # always keep the first frame
+        keep[0] = True
+        if keep.sum().item() < self.min_keep:
+            required = int(self.min_keep - keep.sum().item())
+            if T - 1 > 0:
+                idx = torch.randperm(T - 1, device=x.device)[:required] + 1  # choose from 1..T-1
+                keep[idx] = True
+        return x[:, :, keep, :, :]
+
+class RandomGamma(nn.Module):
+    def __init__(self, gamma=(0.7, 1.5)):
+        super().__init__()
+        self.gamma = gamma
+
+    def forward(self, x):
+        # assume x in [-1,1]
+        x = (x + 1) * 0.5           # -> [0,1]
+        g = torch.empty(1, device=x.device).uniform_(*self.gamma)
+        return (x.pow(g) * 2 - 1).clamp(-1.0, 1.0)
+
+class ClipBrightnessContrast(nn.Module):
+    def __init__(self, brightness=0.3, contrast=0.2):
+        super().__init__()
+        self.b = brightness
+        self.c = contrast
+
+    def forward(self, x):
+        # x: [B, T, C, H, W]
+        b = torch.empty(1, device=x.device).uniform_(-self.b, self.b)
+        c = torch.empty(1, device=x.device).uniform_(1 - self.c, 1 + self.c)
+        mean = x.mean(dim=(-2, -1), keepdim=True)  # per B,T,C over H,W
+        return ((x - mean) * c + mean + b).clamp(-1.0, 1.0)
+
+class SpeckleNoise(torch.nn.Module):
+    def __init__(self, std=(0.02, 0.1)):
+        super().__init__()
+        self.std = std
+
+    def forward(self, x):
+        # assume x in [-1,1]
+        x = (x + 1) * 0.5           # -> [0,1]
+        std = torch.empty(1, device=x.device).uniform_(*self.std)
+        noise = torch.randn_like(x) * std
+        x = (x + x * noise).clamp(0.0, 1.0)
+        return x * 2 - 1            # back to [-1,1]
+
+class FrameDropout(nn.Module):
+    """
+    Randomly drops entire frames in the temporal dimension with probability p.
+    Input shape: [B, T, C, H, W]
+    """
+    def __init__(self, p: float = 0.1):
+        super(FrameDropout, self).__init__()
+        self.p = p
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        B, T, _, _, _ = x.shape
+        mask = (torch.rand(B, T, device=x.device) > self.p).float()  # [B, T]
+        mask = mask[:, :, None, None, None]  # [B, T, 1, 1, 1]
+        return x * mask
+
+class RandomVideoErasing(nn.Module):
+    """
+    Randomly zeros one or more spatiotemporal cuboids in a video tensor.
+
+    Input:  x of shape [B, T, C, H, W]
+    Output: same shape, with K [t, h, w] cuboids set to `value` (across all C).
+
+    Similar to torchvision.transforms.RandomErasing, but extended to video and
+    supports multiple cuboids.
+    """
+
+    def __init__(
+        self,
+        p: float = 0.5,
+        scale= (0.02, 0.4),
+        ratio = (0.3, 3.3),
+        t_scale = (0.1, 1.0),
+        value = 0.0,
+        per_sample: bool = True,
+        attempts: int = 10,
+        inplace: bool = False,
+        num_cuboids: int = 1,
+        num_cuboids_range = None,
+    ):
+        """
+        Args:
+            p: probability of applying erasing.
+            scale: fraction of spatial area to erase (relative to H*W) per cuboid.
+            ratio: aspect ratio range (w/h) per cuboid.
+            t_scale: fraction of temporal length to erase (relative to T) per cuboid.
+            value: fill value (0.0 requested).
+            per_sample: if True, each batch element gets its own cuboids.
+                        if False, same cuboids are applied to all batch elements.
+            attempts: number of tries to find a valid region for each cuboid.
+            inplace: if True, modify input in place.
+            num_cuboids: fixed number of cuboids to erase (ignored if num_cuboids_range is set).
+            num_cuboids_range: if set, sample K uniformly from [low, high] (inclusive).
+        """
+        super().__init__()
+
+        if not (0.0 <= p <= 1.0):
+            raise ValueError("p must be in [0, 1].")
+        if scale[0] <= 0 or scale[1] <= 0 or scale[0] > scale[1]:
+            raise ValueError("scale must be (min, max) with 0 < min <= max.")
+        if ratio[0] <= 0 or ratio[0] > ratio[1]:
+            raise ValueError("ratio must be (min, max) with 0 < min <= max.")
+        if t_scale[0] <= 0 or t_scale[1] <= 0 or t_scale[0] > t_scale[1]:
+            raise ValueError("t_scale must be (min, max) with 0 < min <= max.")
+        if attempts < 1:
+            raise ValueError("attempts must be >= 1.")
+        if num_cuboids_range is not None:
+            lo, hi = num_cuboids_range
+            if lo < 0 or hi < lo:
+                raise ValueError("num_cuboids_range must be (low, high) with 0 <= low <= high.")
+        else:
+            if num_cuboids < 0:
+                raise ValueError("num_cuboids must be >= 0.")
+
+        self.p = p
+        self.scale = scale
+        self.ratio = ratio
+        self.t_scale = t_scale
+        self.value = float(value)
+        self.per_sample = per_sample
+        self.attempts = attempts
+        self.inplace = inplace
+        self.num_cuboids = num_cuboids
+        self.num_cuboids_range = num_cuboids_range
+
+    @staticmethod
+    def _rand_uniform(a: float, b: float) -> float:
+        return a + (b - a) * random.random()
+
+    def _sample_k(self) -> int:
+        if self.num_cuboids_range is None:
+            return self.num_cuboids
+        lo, hi = self.num_cuboids_range
+        return random.randint(lo, hi)
+
+    def _sample_region(self, T: int, H: int, W: int):
+        """
+        Returns (t0, t1, y0, y1, x0, x1) or None if couldn't find a valid region.
+        """
+        area = H * W
+
+        for _ in range(self.attempts):
+            # temporal length
+            t_frac = self._rand_uniform(self.t_scale[0], self.t_scale[1])
+            t_len = max(1, int(round(t_frac * T)))
+            if t_len > T:
+                continue
+
+            # spatial rectangle (area + aspect ratio)
+            erase_area = self._rand_uniform(self.scale[0], self.scale[1]) * area
+            aspect = self._rand_uniform(self.ratio[0], self.ratio[1])
+
+            h = int(round((erase_area / aspect)**0.5))
+            w = int(round((erase_area * aspect)**0.5))
+
+            if h < 1 or w < 1 or h > H or w > W:
+                continue
+
+            t0 = random.randint(0, T - t_len)
+            y0 = random.randint(0, H - h)
+            x0 = random.randint(0, W - w)
+
+            return (t0, t0 + t_len, y0, y0 + h, x0, x0 + w)
+
+        return None
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.ndim != 5:
+            raise ValueError(f"Expected [B,T,C,H,W], got {tuple(x.shape)}")
+
+        if (not self.training) or (random.random() > self.p):
+            return x
+
+        B, T, C, H, W = x.shape
+        out = x if self.inplace else x.clone()
+
+        def erase_on_tensor(tensor_view: torch.Tensor) -> None:
+            # tensor_view is [T, C, H, W] for one sample, or [B, T, C, H, W] for whole batch
+            K = self._sample_k()
+            for _ in range(K):
+                region = self._sample_region(T, H, W)
+                if region is None:
+                    continue
+                t0, t1, y0, y1, x0, x1 = region
+
+                if tensor_view.ndim == 4:
+                    # [T, C, H, W]
+                    tensor_view[t0:t1, :, y0:y1, x0:x1] = self.value
+                else:
+                    # [B, T, C, H, W]
+                    tensor_view[:, t0:t1, :, y0:y1, x0:x1] = self.value
+
+        if self.per_sample:
+            for b in range(B):
+                erase_on_tensor(out[b])
+        else:
+            erase_on_tensor(out)
+
+        return out
+
+augmentations = v2.Compose([
+    v2.RandomApply([# Intensities
+        v2.RandomChoice([
+            v2.RandomChoice([# Intensity distribution
+                ClipBrightnessContrast(brightness=0.3, contrast=0.2),
+                RandomGamma(gamma=(0.7, 1.5))]),
+            v2.RandomChoice([# Sharpness / Blur
+                v2.RandomAdjustSharpness(sharpness_factor=0.5, p=1),
+                v2.GaussianBlur(kernel_size=7, sigma=(0.25, 1.5))]),
+            v2.RandomChoice([# Noise
+                v2.GaussianNoise(0, 0.05),
+                SpeckleNoise(std=(0.02, 0.1))])
+        ])
+    ], p=0.5),
+    v2.RandomApply([# Masking
+        v2.RandomChoice([
+            FrameDropout(p=0.5),
+            RandomVideoErasing(p=1.0,
+            scale=(0.05, 0.25), ratio=(0.25, 4.0), t_scale=(0.5, 1.0), 
+            value=0.0, num_cuboids_range=(2, 4))])
+    ], p=0.2)
+])
+
+fps_jitter = FPSJitter(k=(0.1, 0.75), min_keep=8, p=0.2)
 
 # Functions
 def plot_recons(model, val_ds, output_dir):
@@ -44,7 +292,7 @@ def plot_recons(model, val_ds, output_dir):
     model.eval()
     with torch.no_grad():
         batch_device = batch.to(device)
-        recon_batch, _ = model(batch_device)
+        recon_batch = model(batch_device)
         recon_batch = recon_batch.cpu()
     batch = batch.cpu()
 
@@ -91,7 +339,7 @@ def plot_recons(model, val_ds, output_dir):
     clip_batch = clip.unsqueeze(0).to(device)  # [1, C, 16, H, W]
     model.eval()
     with torch.no_grad():
-        recon_clip_batch, _ = model(clip_batch)
+        recon_clip_batch = model(clip_batch)
         recon_clip_batch = recon_clip_batch.cpu()  # [1, C, 16, H, W]
     clip = clip.cpu()
     recon_clip = recon_clip_batch[0]  # [C, 16, H, W]
@@ -178,27 +426,13 @@ val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=col
 
 # Model
 model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, 
-                        dec_layers=4, levels=5, motion_dim=2, skips=False)
+                           dec_layers=2, levels=5, motion_dim=2)
 model = model.to(device)
 print(f"Initialized MLAE with {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M trainable parameters.")
 
 criterion = nn.MSELoss()
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-
-def effective_rank(A: torch.Tensor, eps: float = 1e-12) -> torch.Tensor:
-    """
-    Differentiable 'rank-like' scalar in [1, n] (approximately),
-    based on entropy of singular values.
-
-    Returns effective rank (not log-rank). To make it a penalty, minimize it.
-    Supports A shaped (n,n) or batched (..., n, n).
-    """
-    s = torch.linalg.svdvals(A)                      # (..., n)
-    s_sum = s.sum(dim=-1, keepdim=True).clamp_min(eps)
-    p = (s / s_sum).clamp_min(eps)                   # (..., n)
-    H = -(p * p.log()).sum(dim=-1)                   # (...)
-    return H.exp()                                   # (...)
 
 
 # Training 
@@ -209,21 +443,25 @@ for epoch in range(epochs):
     p_bar = tqdm(train_dl, desc=f"Epoch {epoch+1}/{epochs}")
     for batch in p_bar:
         videos = batch['video'].to(device, non_blocking=True)  # [B, C, T, H, W]
-        videos = median_blur(videos)    # Denoise before AE
 
         optimizer.zero_grad()
-        x_rec, x_centroid = model(videos)
+
+        # FPS jitter & augmentations
+        videos = fps_jitter(videos)
+        aug_videos = augmentations(videos.transpose(1, 2)).transpose(1, 2).contiguous()
+
+        x_rec = model(aug_videos)
         
-        mse_loss = criterion(x_rec, videos)
-        frechet_loss = criterion(x_centroid, videos)
-        loss = mse_loss + frechet_loss / videos.size(2)
+        # Target denoised with median blur
+        target = median_blur(videos)
+        loss = criterion(x_rec, target)
         
         loss.backward()
         norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         
-        train_loss += mse_loss.item() * videos.size(0)
-        p_bar.set_postfix({'MSE Loss': mse_loss.item(), 'Frechet Loss': frechet_loss.item(), 'Grad Norm': norm.item()})
+        train_loss += loss.item() * videos.size(0)
+        p_bar.set_postfix({'MSE Loss': loss.item(), 'Grad Norm': norm.item()})
         
     train_loss /= len(train_dl.dataset)
     train_losses.append(train_loss)
@@ -234,7 +472,7 @@ for epoch in range(epochs):
         p_bar = tqdm(val_dl, desc=f"Validation Epoch {epoch+1}/{epochs}")
         for batch in p_bar:
             videos = batch['video'].to(device, non_blocking=True)
-            x_rec, _ = model(videos)
+            x_rec = model(videos)
             
             mse_loss = criterion(x_rec, videos)
             val_loss += mse_loss.item() * videos.size(0)
