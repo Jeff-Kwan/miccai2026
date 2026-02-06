@@ -1,16 +1,7 @@
+from collections.abc import Sequence
 import torch
 from torch import nn
 import torch.nn.functional as F
-
-# class CausalConv3d(nn.Module):
-#     def __init__(self, channels):
-#         super().__init__()
-#         self.conv = nn.Conv3d(
-#             channels, channels, kernel_size=(2, 3, 3), padding=0)
-
-#     def forward(self, x):
-#         x = F.pad(x, (1, 1, 1, 1, 1, 0))
-#         return self.conv(x)
 
 class SpatioTemporalConvBlock(nn.Module):
     def __init__(self, channels):
@@ -94,12 +85,13 @@ class ConvDecoder(nn.Module):
 
         
 
-    def forward(self, skips):
-        x = skips.pop()
+    def forward(self, x, skips=None):
+        # x = skips.pop()
         for level in reversed(range(self.levels)):
             x = self.ups[f"{level}"](x)
-            x = torch.cat([x, skips.pop()], dim=1)
-            x = self.merges[f"{level}"](x)
+            if skips is not None:
+                x = torch.cat([x, skips.pop()], dim=1)
+                x = self.merges[f"{level}"](x)
             x = self.level_blocks[f"{level}"](x)
         x = self.out_conv(x)
         return x
@@ -113,49 +105,104 @@ class MotionLatentAE(nn.Module):
         self.encoder = ConvEncoder(in_c, latent, enc_layers, levels)
         self.decoder = ConvDecoder(out_c, latent, dec_layers, levels)
 
-        self.motion_mlp = nn.Sequential(
-            nn.LayerNorm(latent),
-            nn.Linear(latent, latent*2),
-            nn.GELU(),
-            nn.Linear(latent*2, motion_dim, bias=False))
-        self.motion_basis = nn.Parameter(torch.randn(latent, motion_dim) * 0.01)
+        # self.motion_mlp = nn.Sequential(
+        #     nn.LayerNorm(latent),
+        #     nn.Linear(latent, latent*2),
+        #     nn.GELU(),
+        #     nn.Linear(latent*2, motion_dim, bias=False))
+        # self.motion_basis = nn.Parameter(torch.randn(latent, motion_dim) * 0.01)
         
-        self.centroid_mlps = nn.Sequential(
-                nn.Conv3d(latent, latent*4, 1, 1, 0),
-                nn.GELU(),
-                nn.Conv3d(latent*4, latent, 1, 1, 0))
-        
+        # self.centroid_mlps = nn.Sequential(
+        #         nn.Conv3d(latent, latent*4, 1, 1, 0),
+        #         nn.GELU(),
+        #         nn.Conv3d(latent*4, latent, 1, 1, 0))
+        self.down = nn.Conv3d(latent, latent*2, (1, 2, 2), (1, 2, 2), 0)
+        self.up = nn.ConvTranspose3d(latent*2, latent, (1, 2, 2), (1, 2, 2), 0)
 
+    def stable_rank_penalty(self,
+        X: torch.Tensor,
+        matrix_dims: Sequence[int],
+        eps: float = 1e-12,
+        reduction: str = "mean",
+    ):
+        """
+        Stable rank penalty over a batch of matrices.
+        """
+
+        row_dim, col_dim = matrix_dims
+        ndim = X.ndim
+        row_dim %= ndim
+        col_dim %= ndim
+
+        if row_dim == col_dim:
+            raise ValueError("matrix dimensions must be different")
+
+        # Move matrix dims to end
+        batch_dims = [d for d in range(ndim) if d not in (row_dim, col_dim)]
+        perm = batch_dims + [row_dim, col_dim]
+        Y = X.permute(*perm).contiguous()
+
+        batch_shape = Y.shape[:-2]
+        m, n = Y.shape[-2:]
+        Y = Y.reshape(-1, m, n)  # (B, m, n)
+
+        # Frobenius norm squared
+        fro2 = (Y**2).sum(dim=(-2, -1))  # (B,)
+
+        # Largest singular value
+        smax = torch.linalg.svdvals(Y)[..., 0]  # (B,)
+        spec2 = smax**2 + eps
+
+        stable_rank = fro2 / spec2  # (B,)
+
+        stable_rank = stable_rank.reshape(batch_shape)
+
+        if reduction == "mean":
+            return stable_rank.mean()
+        elif reduction == "sum":
+            return stable_rank.sum()
+        elif reduction == "none":
+            return stable_rank
+        else:
+            raise ValueError("Invalid reduction")
+        
     def forward(self, x):
         B, C, T, H, W = x.shape
         skips = self.encoder(x)
 
-        # Frame-wise motion component
-        z_motion = self.motion_mlp(skips[-1].mean(dim=[3,4]).transpose(1, 2))  # [B, T, latent]
-        self.z_motion = z_motion    # Visualization
+        z = skips.pop()
+        z = self.down(z)
+        v = z - z.mean(dim=2, keepdim=True)
+        v = v / v.norm(dim=(1, 2), keepdim=True)
+        self.latent_reg = self.stable_rank_penalty(v, matrix_dims=(1, 2))
+        z = self.up(z)
 
-        # for l in range(self.levels + 1):
-        # Orthonormal motion basis
-        Q, _ = torch.linalg.qr(self.motion_basis + 1e-8, mode='reduced')
-        motion = (z_motion @ Q.T).transpose(1, 2).unsqueeze(-1).unsqueeze(-1)
+        # # Frame-wise motion component
+        # z_motion = self.motion_mlp(skips[-1].mean(dim=[3,4]).transpose(1, 2))  # [B, T, latent]
+        # self.z_motion = z_motion    # Visualization
 
-        # Static structural centroid
-        centroid = self.centroid_mlps(skips[-1].mean(dim=2, keepdim=True))
+        # # for l in range(self.levels + 1):
+        # # Orthonormal motion basis
+        # Q, _ = torch.linalg.qr(self.motion_basis + 1e-8, mode='reduced')
+        # motion = (z_motion @ Q.T).transpose(1, 2).unsqueeze(-1).unsqueeze(-1)
 
-        # Final features
-        skips[-1] = centroid + motion
+        # # Static structural centroid
+        # centroid = self.centroid_mlps(skips[-1].mean(dim=2, keepdim=True))
 
-        for l in range(self.levels):
-            skips[self.levels-1-l] = skips[self.levels-1-l].mean(dim=2, keepdim=True).expand(-1, -1, T, -1, -1)
+        # # Final features
+        # skips[-1] = centroid + motion
 
-        x_rec = self.decoder(skips)
+        # for l in range(self.levels):
+        #     skips[self.levels-1-l] = skips[self.levels-1-l].detach()
+
+        x_rec = self.decoder(z, skips=None)
         return x_rec
 
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, 
-                           dec_layers=2, levels=4, motion_dim=2)
+                           dec_layers=2, levels=5, motion_dim=2)
     model = model.to(device)
     x = torch.randn(16, 3, 128, 128, 128, device=device)  # [B, C, T, H, W]
 

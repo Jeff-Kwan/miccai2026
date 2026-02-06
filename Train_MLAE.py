@@ -27,8 +27,8 @@ epochs = 200
 batch_size = 16
 learning_rate = 1e-4
 weight_decay = 1e-2
-max_frames = 128
-latentL2 = 1e-4
+max_frames = 64
+LAMBDAlat= 1e-3
 
 # Augmentations
 class FPSJitter(nn.Module):
@@ -271,7 +271,7 @@ augmentations = v2.Compose([
         v2.RandomChoice([
             FrameDropout(p=0.5),
             RandomVideoErasing(p=1.0,
-            scale=(0.05, 0.25), ratio=(0.25, 4.0), t_scale=(0.5, 1.0), 
+            scale=(0.1, 0.25), ratio=(0.25, 4.0), t_scale=(1.0, 1.0), 
             value=0.0, num_cuboids_range=(2, 4))])
     ], p=0.2)
 ])
@@ -459,13 +459,13 @@ for epoch in range(epochs):
         
         mse_loss = criterion(x_rec, videos)
         
-        loss = mse_loss
+        loss = mse_loss + model.latent_reg * LAMBDAlat
         loss.backward()
         norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         
         train_loss += loss.item() * videos.size(0)
-        p_bar.set_postfix({'MSE Loss': mse_loss.item(), 'Grad Norm': norm.item()})
+        p_bar.set_postfix({'MSE Loss': mse_loss.item(), 'LatentReg': model.latent_reg.item(), 'Grad Norm': norm.item()})
         
     train_loss /= len(train_dl.dataset)
     train_losses.append(train_loss)

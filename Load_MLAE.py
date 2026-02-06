@@ -11,7 +11,7 @@ import imageio
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_04/17_39_MLAE"
+load_dir = "results/2026_02_05/16_31_MLAE"
 
 model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, 
                            dec_layers=2, levels=5, motion_dim=2)

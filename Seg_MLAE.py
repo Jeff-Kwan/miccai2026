@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_04/17_39_MLAE"
+load_dir = "results/2026_02_06/10_10_MLAE"
 output_dir = os.path.join(load_dir, "LVSeg")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -28,9 +28,10 @@ model_dict.update(matched)
 model.load_state_dict(model_dict)
 model = model.to(device)
 model.encoder.requires_grad_(False)
-model.centroid_mlps.requires_grad_(False)
-model.motion_mlp.requires_grad_(False)
-model.motion_basis.requires_grad_(False)
+model.down.requires_grad_(False)
+# model.centroid_mlps.requires_grad_(False)
+# model.motion_mlp.requires_grad_(False)
+# model.motion_basis.requires_grad_(False)
 
 # Training Parameters
 epochs = 20
@@ -381,7 +382,7 @@ def val_collate_fn(batch):
 
 train_dl = DataLoader(
     train_ds, batch_size=batch_size, shuffle=True, collate_fn=train_collate_fn,
-    num_workers=16, pin_memory=True)
+    num_workers=32, pin_memory=True)
 val_dl = DataLoader(
     val_ds, batch_size=batch_size, shuffle=False, collate_fn=val_collate_fn,
     num_workers=16)
