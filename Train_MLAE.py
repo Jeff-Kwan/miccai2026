@@ -478,7 +478,7 @@ for epoch in range(epochs):
         
         train_loss += loss.item() * videos.size(0)
         p_bar.set_postfix({'MSE Loss': mse_loss.item(), 'ERank': model.effective_rank.item(), 'Grad Norm': norm.item()})
-        break
+        
     train_loss /= len(train_dl.dataset)
     train_losses.append(train_loss)
     
@@ -494,7 +494,7 @@ for epoch in range(epochs):
             val_loss += mse_loss.item() * videos.size(0)
             rank += model.effective_rank.item() * videos.size(0)
             p_bar.set_postfix({'MSE Loss': mse_loss.item()})
-            break
+            
             
     val_loss /= len(val_dl.dataset)
     val_losses.append(val_loss)
