@@ -206,7 +206,6 @@ class MotionLatentAE(nn.Module):
 
         
     def forward(self, x):
-        B, C, T, H, W = x.shape
         z, skips = self.encoder(x)
 
         z = self.down(z)
