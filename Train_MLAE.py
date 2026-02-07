@@ -19,6 +19,7 @@ output_dir = f"results/{date}/{timestamp}_MLAE"
 os.makedirs(output_dir, exist_ok=True)
 
 torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision('high')
 
@@ -30,8 +31,8 @@ weight_decay = 1e-2
 max_frames = 64
 LAMBDAlat= 1e-3
 
-# torch.backends.cudnn.enabled = True
-# torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision('high')
 
@@ -446,10 +447,10 @@ criterion = nn.MSELoss()
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-train_losses = []; val_losses = []
+train_losses = []; val_losses = []; erank = []
 for epoch in range(epochs):
     model.train()
-    train_loss = 0.0
+    train_loss = 0.0; rank = 0.0
     p_bar = tqdm(train_dl, desc=f"Epoch {epoch+1}/{epochs}")
     for batch in p_bar:
         videos = batch['video'].to(device, non_blocking=True)  # [B, C, T, H, W]
@@ -461,12 +462,12 @@ for epoch in range(epochs):
         aug_videos = augmentations(videos.transpose(1, 2)).transpose(1, 2).contiguous()
 
         # Pad to max_frames if needed
-        # T = aug_videos.size(2)
-        # if T < max_frames:
-        #     pad = (0, 0, 0, 0, 0, max_frames - T)  # pad T dimension at the end
-        #     aug_videos = F.pad(aug_videos, pad, mode='constant', value=0)
+        T = aug_videos.size(2)
+        if T < max_frames:
+            pad = (0, 0, 0, 0, 0, max_frames - T)  # pad T dimension at the end
+            aug_videos = F.pad(aug_videos, pad, mode='constant', value=0)
 
-        x_rec = model(aug_videos)  # [B, C, T, H, W]
+        x_rec = model(aug_videos)[:, :, :T, :, :]  # [B, C, T, H, W]
         
         mse_loss = criterion(x_rec, videos)
         
@@ -477,7 +478,7 @@ for epoch in range(epochs):
         
         train_loss += loss.item() * videos.size(0)
         p_bar.set_postfix({'MSE Loss': mse_loss.item(), 'ERank': model.effective_rank.item(), 'Grad Norm': norm.item()})
-        
+        break
     train_loss /= len(train_dl.dataset)
     train_losses.append(train_loss)
     
@@ -491,11 +492,14 @@ for epoch in range(epochs):
             
             mse_loss = criterion(x_rec, videos)
             val_loss += mse_loss.item() * videos.size(0)
+            rank += model.effective_rank.item() * videos.size(0)
             p_bar.set_postfix({'MSE Loss': mse_loss.item()})
-            
+            break
             
     val_loss /= len(val_dl.dataset)
     val_losses.append(val_loss)
+    rank /= len(val_dl.dataset)
+    erank.append(rank)
     
     scheduler.step()
     
@@ -504,13 +508,23 @@ for epoch in range(epochs):
     # Saving model, reconstructions, losses
     torch.save(model.state_dict(), f"{output_dir}/MLAE.pth")
     plot_recons(model, val_ds, output_dir)
-    plt.figure(figsize=(8, 6))
-    plt.plot(range(1, epoch + 2), train_losses, label='Training')
-    plt.plot(range(1, epoch + 2), val_losses, label='Validation')
-    plt.xlabel('Epoch')
-    plt.ylabel('MSE Loss')
-    plt.title('Losses over Epochs')
-    plt.yscale('log')
-    plt.legend()
+    
+    fig, ax1 = plt.subplots(figsize=(8, 6))
+    ax1.plot(range(1, epoch + 2), train_losses, label='Training', color='tab:blue')
+    ax1.plot(range(1, epoch + 2), val_losses, label='Validation', color='tab:orange')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('MSE Loss', color='tab:blue')
+    ax1.tick_params(axis='y', labelcolor='tab:blue')
+    ax1.set_yscale('log')
+    ax1.legend(loc='upper left')
+    
+    ax2 = ax1.twinx()
+    ax2.plot(range(1, epoch + 2), erank, label='Effective Rank', color='tab:green')
+    ax2.set_ylabel('Effective Rank', color='tab:green')
+    ax2.tick_params(axis='y', labelcolor='tab:green')
+    ax2.legend(loc='upper right')
+    
+    plt.title('Losses and Effective Rank over Epochs')
+    plt.tight_layout()
     plt.savefig(f"{output_dir}/losses.png", bbox_inches="tight")
     plt.close()
