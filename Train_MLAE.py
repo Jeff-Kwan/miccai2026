@@ -6,7 +6,7 @@ from torchvision.transforms import v2
 from tqdm import tqdm
 
 from datahandling.EchoDynaDataset import load_echonet_dynamic_datasets
-from models.MotionLatentAE import MotionLatentAE
+from models.MotionLatentAE2 import MotionLatentAE
 import os
 import random
 import matplotlib.pyplot as plt
@@ -24,11 +24,23 @@ torch.set_float32_matmul_precision('high')
 
 # Training Parameters
 epochs = 200
-batch_size = 16
+batch_size = 32
 learning_rate = 1e-4
 weight_decay = 1e-2
 max_frames = 64
 LAMBDAlat= 1e-3
+
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.allow_tf32 = True
+torch.set_float32_matmul_precision('high')
+
+model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, 
+                           dec_layers=2, levels=5, skips=False)
+model = model.to(device)
+# model = torch.compile(model)
+print(f"Initialized MLAE with {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M trainable parameters.")
+
 
 # Augmentations
 class FPSJitter(nn.Module):
@@ -426,21 +438,14 @@ def collate_fn(batch):
 
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, 
                       num_workers=16, pin_memory=True, persistent_workers=True)
-val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, num_workers=6)
+val_dl = DataLoader(val_ds, batch_size=1, shuffle=True, num_workers=16)
 
 
-# Model
-model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, 
-                           dec_layers=2, levels=5, motion_dim=2)
-model = model.to(device)
-print(f"Initialized MLAE with {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M trainable parameters.")
-
+# Training 
 criterion = nn.MSELoss()
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-
-# Training 
 train_losses = []; val_losses = []
 for epoch in range(epochs):
     model.train()
@@ -455,7 +460,13 @@ for epoch in range(epochs):
         videos = fps_jitter(videos)
         aug_videos = augmentations(videos.transpose(1, 2)).transpose(1, 2).contiguous()
 
-        x_rec = model(aug_videos)
+        # Pad to max_frames if needed
+        T = aug_videos.size(2)
+        if T < max_frames:
+            pad = (0, 0, 0, 0, 0, max_frames - T)  # pad T dimension at the end
+            aug_videos = F.pad(aug_videos, pad, mode='constant', value=0)
+
+        x_rec = model(aug_videos)[:, :, :T, :, :]  # [B, C, T, H, W]
         
         mse_loss = criterion(x_rec, videos)
         
@@ -465,7 +476,7 @@ for epoch in range(epochs):
         optimizer.step()
         
         train_loss += loss.item() * videos.size(0)
-        p_bar.set_postfix({'MSE Loss': mse_loss.item(), 'LatentReg': model.latent_reg.item(), 'Grad Norm': norm.item()})
+        p_bar.set_postfix({'MSE Loss': mse_loss.item(), 'ERank': model.effective_rank.item(), 'Grad Norm': norm.item()})
         
     train_loss /= len(train_dl.dataset)
     train_losses.append(train_loss)

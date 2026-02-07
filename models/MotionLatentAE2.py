@@ -1,16 +1,24 @@
-from collections.abc import Sequence
 import torch
 from torch import nn
 import torch.nn.functional as F
+
+class CausalConv(nn.Module):
+    def __init__(self, in_c, out_c):
+        super(CausalConv, self).__init__()
+        self.conv = nn.Conv3d(in_c, out_c, (2, 3, 3), 1, (0, 1, 1))
+
+    def forward(self, x):
+        x = F.pad(x, (0, 0, 0, 0, 1, 0))  # pad only the past in time dimension
+        return self.conv(x)
 
 class SpatioTemporalConvBlock(nn.Module):
     def __init__(self, channels):
         super(SpatioTemporalConvBlock, self).__init__()
         self.convs = nn.Sequential(
-            nn.Conv3d(channels, channels, 3, 1, 1),
+            CausalConv(channels, channels),
             nn.GroupNorm(4, channels),
             nn.GELU(),
-            nn.Conv3d(channels, channels, 3, 1, 1))
+            CausalConv(channels, channels))
 
     def forward(self, x):
         return x + self.convs(x)
@@ -37,11 +45,11 @@ class ConvEncoder(nn.Module):
         level_blocks = {}; downs = {}
         for level in range(levels):
             level_blocks[f"{level}"] = nn.Sequential(
-                *[SpatioConvBlock(init_c * (2 ** level))
+                *[SpatioTemporalConvBlock(init_c * (2 ** level))
                     for _ in range(layers)],
                 nn.GroupNorm(1, init_c * (2 ** level)))
             downs[f"{level}"] = nn.Conv3d(init_c*(2**level), init_c*(2** (level + 1)),
-                    (1, 2, 2), (1, 2, 2), 0)
+                    (1, 3, 3), (1, 2, 2), (0, 1, 1))
         self.level_blocks = nn.ModuleDict(level_blocks)
         self.downs = nn.ModuleDict(downs)
 
@@ -57,11 +65,10 @@ class ConvEncoder(nn.Module):
             skips.append(x)
             x = self.downs[f"{level}"](x)
         x = self.bottleneck(x)
-        skips.append(x)
-        return skips
+        return x, skips
 
 class ConvDecoder(nn.Module):
-    def __init__(self, out_c=3, latent=512, layers=4, levels=6):
+    def __init__(self, out_c=3, latent=512, layers=4, levels=6, skips=False):
         super(ConvDecoder, self).__init__()
         self.levels = levels
         init_c = latent // (2 ** levels)
@@ -76,17 +83,18 @@ class ConvDecoder(nn.Module):
                 *[SpatioConvBlock(init_c * (2 ** level))
                     for _ in range(layers)])
             
-            merges[f"{level}"] = nn.Conv3d(init_c * (2 ** (level+1)), 
-                                           init_c * (2 ** level), 1, 1, 0)
+            if skips:
+                merges[f"{level}"] = nn.Conv3d(init_c * (2 ** (level+1)), 
+                                            init_c * (2 ** level), 1, 1, 0)
         self.ups = nn.ModuleDict(ups)
         self.level_blocks = nn.ModuleDict(level_blocks)
-        self.merges = nn.ModuleDict(merges)
+        if skips:
+            self.merges = nn.ModuleDict(merges)
         self.out_conv = nn.ConvTranspose3d(init_c, out_c, (1, 2, 2), (1, 2, 2), 0)
 
         
 
-    def forward(self, skips=None):
-        x = skips.pop()
+    def forward(self, x, skips=None):
         for level in reversed(range(self.levels)):
             x = self.ups[f"{level}"](x)
             if skips is not None:
@@ -98,60 +106,130 @@ class ConvDecoder(nn.Module):
 
 
 class MotionLatentAE(nn.Module):
-    def __init__(self, in_c=3, out_c=3, latent=512, enc_layers=6, dec_layers=2, levels=6, motion_dim=2):
+    def __init__(self, in_c=3, out_c=3, latent=512, enc_layers=6, dec_layers=2, levels=6, skips=False):
         super(MotionLatentAE, self).__init__()
         self.latent = latent
         self.levels = levels
+        self.skips = skips
         self.encoder = ConvEncoder(in_c, latent, enc_layers, levels)
-        self.decoder = ConvDecoder(out_c, latent, dec_layers, levels)
+        self.decoder = ConvDecoder(out_c, latent, dec_layers, levels, skips=skips)
 
-        self.motion_mlp = nn.Sequential(
-            nn.LayerNorm(latent),
-            nn.Linear(latent, latent*2),
-            nn.GELU(),
-            nn.Linear(latent*2, motion_dim, bias=False))
-        self.motion_basis = nn.Parameter(torch.randn(latent, motion_dim) * 0.01)
-        
-        self.centroid_mlps = nn.Sequential(
-                nn.Conv3d(latent, latent*4, 1, 1, 0),
-                nn.GELU(),
-                nn.Conv3d(latent*4, latent, 1, 1, 0))
         self.down = nn.Conv3d(latent, latent*2, (1, 2, 2), (1, 2, 2), 0)
         self.up = nn.ConvTranspose3d(latent*2, latent, (1, 2, 2), (1, 2, 2), 0)
 
+    def spectral_entropy_penalty(
+        self,
+        X: torch.Tensor,
+        matrix_dims,
+        eps: float = 1e-12,
+        reduction: str = "mean",
+        normalized: bool = True,
+    ):
+        row_dim, col_dim = matrix_dims
+        ndim = X.ndim
+        row_dim %= ndim
+        col_dim %= ndim
+        if row_dim == col_dim:
+            raise ValueError("matrix dimensions must be different")
 
+        batch_dims = [d for d in range(ndim) if d not in (row_dim, col_dim)]
+        perm = batch_dims + [row_dim, col_dim]
+        Y = X.permute(*perm).contiguous()
+
+        batch_shape = Y.shape[:-2]
+        m, n = Y.shape[-2:]
+        Y = Y.reshape(-1, m, n)
+
+        s = torch.linalg.svdvals(Y)
+        p = s / (s.sum(dim=-1, keepdim=True) + eps)
+        H = -(p * (p + eps).log()).sum(dim=-1)
+
+        if normalized:
+            k = min(m, n)
+            H = H / (torch.log(torch.tensor(float(k), device=H.device)) + eps)
+
+        H = H.reshape(batch_shape)
+
+        if reduction == "mean":
+            return H.mean()
+        elif reduction == "sum":
+            return H.sum()
+        elif reduction == "none":
+            return H
+        else:
+            raise ValueError("Invalid reduction")
+    
+    def logdet_spectral_penalty(
+        self,
+        X: torch.Tensor,
+        matrix_dims,
+        eps: float = 1e-8,
+        reduction: str = "mean",
+        squared: bool = False,
+    ):
+        row_dim, col_dim = matrix_dims
+        ndim = X.ndim
+        row_dim %= ndim
+        col_dim %= ndim
+        if row_dim == col_dim:
+            raise ValueError("matrix dimensions must be different")
+
+        batch_dims = [d for d in range(ndim) if d not in (row_dim, col_dim)]
+        perm = batch_dims + [row_dim, col_dim]
+        Y = X.permute(*perm).contiguous()
+
+        batch_shape = Y.shape[:-2]
+        m, n = Y.shape[-2:]
+        Y = Y.reshape(-1, m, n)
+
+        # singular values
+        s = torch.linalg.svdvals(Y)
+
+        # Mean is scaling factor
+        if squared:
+            # corresponds to logdet(X^T X + eps I) up to a constant
+            penalty = torch.log(s**2 + eps).mean(dim=-1)
+        else:
+            # stronger tail suppression but steeper gradients near zero
+            penalty = torch.log(s + eps).mean(dim=-1)
+
+        penalty = penalty.reshape(batch_shape)
+
+        if reduction == "mean":
+            return penalty.mean()
+        elif reduction == "sum":
+            return penalty.sum()
+        elif reduction == "none":
+            return penalty
+        else:
+            raise ValueError("Invalid reduction")
+
+        
     def forward(self, x):
         B, C, T, H, W = x.shape
-        skips = self.encoder(x)
+        z, skips = self.encoder(x)
 
-        # Frame-wise motion component
-        z_motion = self.motion_mlp(skips[-1].mean(dim=[3,4]).transpose(1, 2))  # [B, T, latent]
-        self.z_motion = z_motion    # Visualization
+        z = self.down(z)
+        v = z - z.mean(dim=2, keepdim=True)
+        self.v = v.squeeze()    # [B, latent, T]
+        with torch.no_grad():
+            self.effective_rank = self.spectral_entropy_penalty(v, matrix_dims=(1, 2)).exp()
+        self.latent_reg = self.spectral_entropy_penalty(v, matrix_dims=(1, 2)) +\
+                            self.logdet_spectral_penalty(v, matrix_dims=(1, 2), squared=True)
+        z = self.up(z)
 
-        # for l in range(self.levels + 1):
-        # Orthonormal motion basis
-        Q, _ = torch.linalg.qr(self.motion_basis + 1e-8, mode='reduced')
-        motion = (z_motion @ Q.T).transpose(1, 2).unsqueeze(-1).unsqueeze(-1)
-
-        # Static structural centroid
-        centroid = self.centroid_mlps(skips[-1].mean(dim=2, keepdim=True))
-
-        # Final features
-        skips[-1] = centroid + motion
-
-        for l in range(self.levels):
-            skips[self.levels-1-l] = skips[self.levels-1-l].detach()
-
-        x_rec = self.decoder(skips)
-        return x_rec
+        if self.skips:
+            return self.decoder(z, skips)
+        else:
+            return self.decoder(z, skips=None)
 
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, 
-                           dec_layers=2, levels=5, motion_dim=2)
+                           dec_layers=2, levels=5, skips=False)
     model = model.to(device)
-    x = torch.randn(16, 3, 128, 128, 128, device=device)  # [B, C, T, H, W]
+    x = torch.randn(32, 3, 64, 128, 128, device=device)  # [B, C, T, H, W]
 
     # Profile memory usage
     torch.cuda.empty_cache() if torch.cuda.is_available() else None

@@ -1,6 +1,6 @@
 import torch 
 from datahandling.EchoDynaDataset import load_echonet_dynamic_datasets
-from models.MotionLatentAE import MotionLatentAE
+from models.MotionLatentAE2 import MotionLatentAE
 import os
 import random
 import matplotlib.pyplot as plt
@@ -11,10 +11,12 @@ import imageio
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_05/16_31_MLAE"
+load_dir = "results/2026_02_06/19_57_MLAE"
+output_dir = os.path.join(load_dir, "reconstructions")
+os.makedirs(output_dir, exist_ok=True)
 
 model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, 
-                           dec_layers=2, levels=5, motion_dim=2)
+                           dec_layers=2, levels=5, skips=False)
 model = model.to(device)
 model.load_state_dict(torch.load(os.path.join(load_dir, "MLAE.pth"), map_location=device))
 model = model.to(device)
@@ -34,10 +36,31 @@ video = val_ds[idx]['video'].to(device).unsqueeze(0)  # [1, C, T, H, W]
 _, C, T, H, W = video.shape
 with torch.inference_mode():
     reconstruction = model(video)
-    z_motion = model.z_motion.cpu().numpy().squeeze()
+    # z_motion = model.z_motion.cpu().numpy().squeeze()
 
-output_dir = os.path.join(load_dir, "reconstructions")
-os.makedirs(output_dir, exist_ok=True)
+v = model.v.cpu().numpy().squeeze()  # [T, latent]
+
+# Compute effective rank of v
+_, s, _ = np.linalg.svd(v, full_matrices=False)
+s_normalized = s / s.sum()
+effective_rank = np.exp(-np.sum(s_normalized * np.log(s_normalized + 1e-10)))
+print(f"Effective rank of v: {effective_rank:.4f}")
+
+# Plot the singular value spectrum up to effective rank
+num_plot = min(int(2*effective_rank), len(s))
+plt.figure(figsize=(6, 4))
+plt.plot(s[:num_plot], marker='o')
+plt.title("Singular Value Spectrum of v")
+plt.xlabel("Index")
+plt.ylabel("Singular Value")
+plt.yscale("log")
+plt.axvline(x=effective_rank, color='r', linestyle='--', label=f"Effective rank: {effective_rank:.2f}")
+plt.grid(True, which="both", linestyle=":", alpha=0.6)
+plt.legend()
+plt.savefig(os.path.join(output_dir, f"{idx}-v_singular_values.png"), dpi=300, bbox_inches="tight")
+plt.close()
+
+exit()
 
 # Get FPS from dataset metadata
 fps = val_ds[idx]["metadata"]["FPS"]
