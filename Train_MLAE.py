@@ -461,12 +461,12 @@ for epoch in range(epochs):
         aug_videos = augmentations(videos.transpose(1, 2)).transpose(1, 2).contiguous()
 
         # Pad to max_frames if needed
-        T = aug_videos.size(2)
-        if T < max_frames:
-            pad = (0, 0, 0, 0, 0, max_frames - T)  # pad T dimension at the end
-            aug_videos = F.pad(aug_videos, pad, mode='constant', value=0)
+        # T = aug_videos.size(2)
+        # if T < max_frames:
+        #     pad = (0, 0, 0, 0, 0, max_frames - T)  # pad T dimension at the end
+        #     aug_videos = F.pad(aug_videos, pad, mode='constant', value=0)
 
-        x_rec = model(aug_videos)[:, :, :T, :, :]  # [B, C, T, H, W]
+        x_rec = model(aug_videos)  # [B, C, T, H, W]
         
         mse_loss = criterion(x_rec, videos)
         
