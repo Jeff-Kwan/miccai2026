@@ -24,7 +24,7 @@ batch_size = 32
 learning_rate = 1e-4
 weight_decay = 1e-2
 max_frames = 64
-LAMBDAlat= 1e-4
+LAMBDAlat= 2e-4
 
 torch.backends.cudnn.enabled = True
 # torch.backends.cudnn.benchmark = True
@@ -419,7 +419,7 @@ train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(
     "data/echodyna/VolumeTracings.csv",
     load_video=True)
 
-def collate_fn(batch):
+def collate_fn(batch, apply_augs=False):
     # Random sample to the minimum number of frames in the batch, with max cap
     min_frames = min(min(item['video'].shape[1] for item in batch), max_frames)
     for item in batch:
@@ -431,11 +431,18 @@ def collate_fn(batch):
         else:
             item['video'] = item['video'][:, :min_frames, :, :]
     videos = torch.stack([item['video'] for item in batch])  # [B, C, T, H, W]
-    return {'video': videos}
+    if apply_augs:
+        videos = fps_jitter(videos)
+        aug_videos = augmentations(videos.transpose(1, 2)).transpose(1, 2).contiguous()
+        return {'video': videos, 'aug_video': aug_videos}
+    else:
+        return {'video': videos}
 
-train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, 
-                      num_workers=16, pin_memory=True, persistent_workers=True)
-val_dl = DataLoader(val_ds, batch_size=1, shuffle=True, num_workers=16, pin_memory=True)
+train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, 
+                      collate_fn=lambda b: collate_fn(b, apply_augs=True),
+                      num_workers=32, pin_memory=True, persistent_workers=True)
+val_dl = DataLoader(val_ds, batch_size=1, shuffle=True, num_workers=32, pin_memory=True,
+                    collate_fn=lambda b: collate_fn(b, apply_augs=False))
 
 
 # Training 
@@ -450,21 +457,17 @@ for epoch in range(epochs):
     p_bar = tqdm(train_dl, desc=f"Epoch {epoch+1}/{epochs}")
     for batch in p_bar:
         videos = batch['video'].to(device, non_blocking=True)  # [B, C, T, H, W]
-
+        aug_videos = batch['aug_video'].to(device, non_blocking=True)  # [B, C, T, H, W]
         optimizer.zero_grad()
 
-        # FPS jitter & augmentations
-        videos = fps_jitter(videos)
-        aug_videos = augmentations(videos.transpose(1, 2)).transpose(1, 2).contiguous()
-
         # Pad to max_frames if needed
-        T = aug_videos.size(2)
-        if T < max_frames:
-            pad = (0, 0, 0, 0, 0, max_frames - T)  # pad T dimension at the end
-            aug_videos = F.pad(aug_videos, pad, mode='constant', value=0)
+        # T = aug_videos.size(2)
+        # if T < max_frames:
+        #     pad = (0, 0, 0, 0, 0, max_frames - T)  # pad T dimension at the end
+        #     aug_videos = F.pad(aug_videos, pad, mode='constant', value=0)
 
         with torch.autocast(device_type='cuda', dtype=precision):
-            x_rec = model(aug_videos)[:, :, :T, :, :]  # [B, C, T, H, W]
+            x_rec = model(aug_videos)  # [B, C, T, H, W]
             mse_loss = criterion(x_rec, videos)
             loss = mse_loss + model.latent_reg * LAMBDAlat
 
