@@ -32,7 +32,7 @@ max_frames = 64
 LAMBDAlat= 1e-3
 
 torch.backends.cudnn.enabled = True
-torch.backends.cudnn.benchmark = True
+# torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision('high')
 
