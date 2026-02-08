@@ -262,30 +262,31 @@ class RandomVideoErasing(nn.Module):
 
         return out
 
-augmentations = v2.Compose([
-    v2.RandomApply([# Intensities
-        v2.RandomChoice([
-            v2.RandomChoice([# Intensity distribution
-                ClipBrightnessContrast(brightness=0.3, contrast=0.2),
-                RandomGamma(gamma=(0.7, 1.5))]),
-            v2.RandomChoice([# Sharpness / Blur
-                v2.RandomAdjustSharpness(sharpness_factor=0.5, p=1),
-                v2.GaussianBlur(kernel_size=7, sigma=(0.25, 1.5))]),
-            v2.RandomChoice([# Noise
-                v2.GaussianNoise(0, 0.05),
-                SpeckleNoise(std=(0.02, 0.1))])
-        ])
-    ], p=0.5),
-    v2.RandomApply([# Masking
-        v2.RandomChoice([
-            FrameDropout(p=0.5),
-            RandomVideoErasing(p=1.0,
-            scale=(0.1, 0.25), ratio=(0.25, 4.0), t_scale=(1.0, 1.0), 
-            value=0.0, num_cuboids_range=(2, 4))])
-    ], p=0.2)
-])
+# augmentations = v2.Compose([
+#     v2.RandomApply([# Intensities
+#         v2.RandomChoice([
+#             v2.RandomChoice([# Intensity distribution
+#                 ClipBrightnessContrast(brightness=0.3, contrast=0.2),
+#                 RandomGamma(gamma=(0.7, 1.5))]),
+#             v2.RandomChoice([# Sharpness / Blur
+#                 v2.RandomAdjustSharpness(sharpness_factor=0.5, p=1),
+#                 v2.GaussianBlur(kernel_size=7, sigma=(0.25, 1.5))]),
+#             v2.RandomChoice([# Noise
+#                 v2.GaussianNoise(0, 0.05),
+#                 SpeckleNoise(std=(0.02, 0.1))])
+#         ])
+#     ], p=0.5),
+#     v2.RandomApply([# Masking
+#         v2.RandomChoice([
+#             FrameDropout(p=0.5),
+#             RandomVideoErasing(p=1.0,
+#             scale=(0.1, 0.25), ratio=(0.25, 4.0), t_scale=(1.0, 1.0), 
+#             value=0.0, num_cuboids_range=(2, 4))])
+#     ], p=0.2)
+# ])
 
-fps_jitter = FPSJitter(k=(0.1, 0.75), min_keep=8, p=0.2)
+# fps_jitter = FPSJitter(k=(0.1, 0.75), min_keep=8, p=0.2)
+augmentations = v2.Identity(); fps_jitter = v2.Identity()
 
 # Functions
 def plot_recons(model, val_ds, output_dir):
@@ -435,7 +436,7 @@ def collate_fn(batch):
 
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, 
                       collate_fn=collate_fn,
-                      num_workers=84, pin_memory=True, persistent_workers=True)
+                      num_workers=48, pin_memory=True, persistent_workers=True)
 val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=32, pin_memory=True,
                     collate_fn=collate_fn)
 
@@ -501,7 +502,7 @@ for epoch in range(epochs):
     
     scheduler.step()
     
-    print(f"Epoch [{epoch+1}/{epochs}], Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+    print(f"Epoch [{epoch+1}/{epochs}], Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Effective Rank: {rank:.2f}")
 
     # Saving model, reconstructions, losses
     torch.save(model.state_dict(), f"{output_dir}/MLAE.pth")

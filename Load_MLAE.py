@@ -11,7 +11,7 @@ import imageio
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_06/19_57_MLAE"
+load_dir = "results/2026_02_08/10_21_MLAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -42,12 +42,14 @@ v = model.v.cpu().numpy().squeeze()  # [T, latent]
 
 # Compute effective rank of v
 _, s, _ = np.linalg.svd(v, full_matrices=False)
-s_normalized = s / s.sum()
-effective_rank = np.exp(-np.sum(s_normalized * np.log(s_normalized + 1e-10)))
+e = s**2
+p = e / e.sum()
+H = -(p * np.log(p)).sum()
+effective_rank = np.exp(H)
 print(f"Effective rank of v: {effective_rank:.4f}")
 
 # Plot the singular value spectrum up to effective rank
-num_plot = min(int(2*effective_rank), len(s))
+num_plot = min(max(int(4*effective_rank), 40), len(s))
 plt.figure(figsize=(6, 4))
 plt.plot(s[:num_plot], marker='o')
 plt.title("Singular Value Spectrum of v")
@@ -60,7 +62,10 @@ plt.legend()
 plt.savefig(os.path.join(output_dir, f"{idx}-v_singular_values.png"), dpi=300, bbox_inches="tight")
 plt.close()
 
-exit()
+# z_motion = PC1, PC2
+z_motion = v[:, :2]  # [T, 2]
+
+
 
 # Get FPS from dataset metadata
 fps = val_ds[idx]["metadata"]["FPS"]

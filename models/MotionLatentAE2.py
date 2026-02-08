@@ -2,23 +2,23 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-class CausalConv(nn.Module):
-    def __init__(self, in_c, out_c):
-        super(CausalConv, self).__init__()
-        self.conv = nn.Conv3d(in_c, out_c, (2, 3, 3), 1, (0, 1, 1))
+# class CausalConv(nn.Module):
+#     def __init__(self, in_c, out_c):
+#         super(CausalConv, self).__init__()
+#         self.conv = nn.Conv3d(in_c, out_c, (2, 3, 3), 1, (0, 1, 1))
 
-    def forward(self, x):
-        x = F.pad(x, (0, 0, 0, 0, 1, 0))  # pad only the past in time dimension
-        return self.conv(x)
+#     def forward(self, x):
+#         x = F.pad(x, (0, 0, 0, 0, 1, 0))  # pad only the past in time dimension
+#         return self.conv(x)
 
 class SpatioTemporalConvBlock(nn.Module):
     def __init__(self, channels):
         super(SpatioTemporalConvBlock, self).__init__()
         self.convs = nn.Sequential(
-            CausalConv(channels, channels),
+            nn.Conv3d(channels, channels, 3, 1, 1),
             nn.GroupNorm(4, channels),
             nn.GELU(),
-            CausalConv(channels, channels))
+            nn.Conv3d(channels, channels, 3, 1, 1))
 
     def forward(self, x):
         return x + self.convs(x)
@@ -148,8 +148,8 @@ class MotionLatentAE(nn.Module):
         z, skips = self.encoder(x)
 
         z = self.down(z)
-        v = z - z.mean(dim=2, keepdim=True)
-        self.v = v.squeeze()    # [B, latent, T]
+        # v = z - z.mean(dim=2, keepdim=True)
+        self.v = (z[:, :, 1:, :, :] - z[:, :, :-1, :, :]).squeeze() # [B, C, T]
         s = self.svdvals_fp32(self.v)
         self.effective_rank = self.batch_effective_rank(s).mean()
         if self.training:
