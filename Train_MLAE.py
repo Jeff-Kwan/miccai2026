@@ -18,11 +18,6 @@ timestamp = datetime.now().strftime("%H_%M")
 output_dir = f"results/{date}/{timestamp}_MLAE"
 os.makedirs(output_dir, exist_ok=True)
 
-torch.backends.cudnn.enabled = True
-torch.backends.cudnn.benchmark = True
-torch.backends.cudnn.allow_tf32 = True
-torch.set_float32_matmul_precision('high')
-
 # Training Parameters
 epochs = 200
 batch_size = 32
@@ -32,7 +27,7 @@ max_frames = 64
 LAMBDAlat= 1e-4
 
 torch.backends.cudnn.enabled = True
-torch.backends.cudnn.benchmark = True
+# torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision('medium')
 precision = torch.bfloat16
@@ -40,7 +35,7 @@ precision = torch.bfloat16
 model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, 
                            dec_layers=2, levels=5, skips=False)
 model = model.to(device)
-model = torch.compile(model)
+# model = torch.compile(model)
 print(f"Initialized MLAE with {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M trainable parameters.")
 
 
@@ -439,8 +434,8 @@ def collate_fn(batch):
     return {'video': videos}
 
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, 
-                      num_workers=32, pin_memory=True, persistent_workers=True)
-val_dl = DataLoader(val_ds, batch_size=1, shuffle=True, num_workers=32, pin_memory=True)
+                      num_workers=16, pin_memory=True, persistent_workers=True)
+val_dl = DataLoader(val_ds, batch_size=1, shuffle=True, num_workers=16, pin_memory=True)
 
 
 # Training 
