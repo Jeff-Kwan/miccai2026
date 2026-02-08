@@ -153,7 +153,7 @@ class MotionLatentAE(nn.Module):
         s = self.svdvals_fp32(self.v)
         self.effective_rank = self.batch_effective_rank(s).mean()
         if self.training:
-            self.latent_reg = 0.1 * self.spectral_entropy_penalty(s) +\
+            self.latent_reg = self.spectral_entropy_penalty(s) +\
                                 self.schatten_p_mean_power(s, p=1.0)
         z = self.up(z)
 

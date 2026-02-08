@@ -435,8 +435,8 @@ def collate_fn(batch):
 
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, 
                       collate_fn=collate_fn,
-                      num_workers=48, pin_memory=True, persistent_workers=True)
-val_dl = DataLoader(val_ds, batch_size=1, shuffle=True, num_workers=48, pin_memory=True,
+                      num_workers=32, pin_memory=True, persistent_workers=True)
+val_dl = DataLoader(val_ds, batch_size=1, shuffle=True, num_workers=32, pin_memory=True,
                     collate_fn=collate_fn)
 
 
