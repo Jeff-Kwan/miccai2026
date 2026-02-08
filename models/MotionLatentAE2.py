@@ -116,6 +116,7 @@ class MotionLatentAE(nn.Module):
 
         self.down = nn.Conv3d(latent, latent*2, (1, 2, 2), (1, 2, 2), 0)
         self.up = nn.ConvTranspose3d(latent*2, latent, (1, 2, 2), (1, 2, 2), 0)
+        self.motion_basis = nn.Parameter(torch.randn(latent*2, 2))
 
     def svdvals_fp32(self, A):
         return torch.linalg.svdvals(A.float()).to(A.dtype)
@@ -149,17 +150,12 @@ class MotionLatentAE(nn.Module):
         z, skips = self.encoder(x)
 
         z = self.down(z)
-
-        with torch.no_grad():
-            self.z_motion = (z - z.mean(dim=2, keepdim=True)).squeeze()
-            self.effective_rank = self.batch_effective_rank(self.z_motion).mean()
-
-        if self.training:
-            # s = self.svdvals_fp32((z - self.random_permute_dim(z, dim=2)).squeeze())
-            # self.latent_reg = self.spectral_entropy_penalty(s)
-            self.latent_reg = z.std(dim=2) * torch.linspace(0, 2, self.latent*2, device=z.device).view(1, 1, -1, 1, 1)
-            self.latent_reg = self.latent_reg.mean()
-            
+        
+        z_centroid = z.mean(dim=2, keepdim=True)
+        X, _ = torch.linalg.qr(self.motion_basis)
+        z_motion = (z - z_centroid).view(z.size(0), z.size(1), z.size(2)).transpose(1, 2) @ X
+        self.z_motion = z_motion
+        z = z_centroid + (z_motion @ X.T).transpose(1, 2).view_as(z)
         z = self.up(z)
 
         if self.skips:
