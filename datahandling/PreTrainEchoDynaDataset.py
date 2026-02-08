@@ -62,9 +62,3 @@ def load_echonet_dynamic_datasets():
     val_ds   = EchoDynaPreprocessedDataset(pre_root, "VAL",   video_dtype=torch.float32)
     test_ds  = EchoDynaPreprocessedDataset(pre_root, "TEST",  video_dtype=torch.float32)
     return train_ds, val_ds, test_ds
-
-def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
-    videos = [x["video"] for x in batch]          # list of [C,T,H,W]
-    metas  = [x["metadata"] for x in batch]       # list of dicts
-    paths  = [x["path"] for x in batch]
-    return {"videos": videos, "metadata": metas, "paths": paths}

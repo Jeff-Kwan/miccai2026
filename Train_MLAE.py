@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 from torchvision.transforms import v2
 from tqdm import tqdm
 
-from datahandling.EchoDynaDataset import load_echonet_dynamic_datasets
+from datahandling.PreTrainEchoDynaDataset import load_echonet_dynamic_datasets
 from models.MotionLatentAE2 import MotionLatentAE
 import os
 import random
@@ -19,12 +19,12 @@ output_dir = f"results/{date}/{timestamp}_MLAE"
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 50
+epochs = 20
 batch_size = 32
-learning_rate = 2e-4
+learning_rate = 3e-4
 weight_decay = 1e-2
-max_frames = 64
-LAMBDAlat= 1e-5
+max_frames = 32
+LAMBDAlat = 1e-3
 
 # torch.backends.cudnn.enabled = True
 # torch.backends.cudnn.benchmark = True
@@ -375,7 +375,7 @@ def plot_recons(model, val_ds, output_dir):
             axs[1, i].imshow(recon_np)
     plt.tight_layout()
     plt.savefig(f"{output_dir}/recon_video.png", bbox_inches="tight")    
-    plt.close(fig)
+    plt.close()
 
 @torch.no_grad()  # remove if you need gradients (median is piecewise-constant anyway)
 def median_blur(x: torch.Tensor, padding_mode: str = "reflect") -> torch.Tensor:
@@ -414,11 +414,7 @@ def median_blur(x: torch.Tensor, padding_mode: str = "reflect") -> torch.Tensor:
 
 
 # Dataset
-train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(
-    "data/echodyna/FileList.csv",
-    "data/echodyna/Videos",
-    "data/echodyna/VolumeTracings.csv",
-    load_video=True)
+train_ds, val_ds, test_ds = load_echonet_dynamic_datasets()
 
 def collate_fn(batch):
     # Random sample to the minimum number of frames in the batch, with max cap
@@ -436,7 +432,7 @@ def collate_fn(batch):
 
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, 
                       collate_fn=collate_fn,
-                      num_workers=48, pin_memory=True, persistent_workers=True)
+                      num_workers=64, pin_memory=True, persistent_workers=True)
 val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=32, pin_memory=True,
                     collate_fn=collate_fn)
 

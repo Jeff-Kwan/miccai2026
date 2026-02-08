@@ -11,7 +11,7 @@ import imageio
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_08/10_21_MLAE"
+load_dir = "results/2026_02_08/15_50_MLAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -36,36 +36,32 @@ video = val_ds[idx]['video'].to(device).unsqueeze(0)  # [1, C, T, H, W]
 _, C, T, H, W = video.shape
 with torch.inference_mode():
     reconstruction = model(video)
-    # z_motion = model.z_motion.cpu().numpy().squeeze()
+    z_motion = model.z_motion.cpu().numpy().squeeze()
 
-v = model.v.cpu().numpy().squeeze()  # [T, latent]
-
-# Compute effective rank of v
-_, s, _ = np.linalg.svd(v, full_matrices=False)
+# Compute effective rank of z_motion
+U, s, Vh = np.linalg.svd(z_motion, full_matrices=False)
 e = s**2
 p = e / e.sum()
 H = -(p * np.log(p)).sum()
 effective_rank = np.exp(H)
-print(f"Effective rank of v: {effective_rank:.4f}")
+print(f"Effective rank of z_motion: {effective_rank:.4f}")
+
+# Project z_motion into PC space
+z_motion = z_motion @ Vh.T
 
 # Plot the singular value spectrum up to effective rank
 num_plot = min(max(int(4*effective_rank), 40), len(s))
 plt.figure(figsize=(6, 4))
 plt.plot(s[:num_plot], marker='o')
-plt.title("Singular Value Spectrum of v")
+plt.title("Singular Value Spectrum of z_motion")
 plt.xlabel("Index")
 plt.ylabel("Singular Value")
 plt.yscale("log")
 plt.axvline(x=effective_rank, color='r', linestyle='--', label=f"Effective rank: {effective_rank:.2f}")
 plt.grid(True, which="both", linestyle=":", alpha=0.6)
 plt.legend()
-plt.savefig(os.path.join(output_dir, f"{idx}-v_singular_values.png"), dpi=300, bbox_inches="tight")
+plt.savefig(os.path.join(output_dir, f"{idx}-z_singular_values.png"), dpi=300, bbox_inches="tight")
 plt.close()
-
-# z_motion = PC1, PC2
-z_motion = v[:, :2]  # [T, 2]
-
-
 
 # Get FPS from dataset metadata
 fps = val_ds[idx]["metadata"]["FPS"]
@@ -108,15 +104,11 @@ gif_path = os.path.join(output_dir, f"{idx}-reconstruction.gif")
 imageio.mimsave(gif_path, frames, duration=duration)
 
 
-def plot_colormap_trajectory(x, y, esed, title, xlabel, ylabel, save_path,
+def plot_colormap_trajectory(x, y, title, xlabel, ylabel, save_path,
                              cmap="coolwarm"):
     """
     x, y: arrays of shape (T,)
     """
-    es, ed = esed  # end-systole, end-diastole indices
-    ed_idx = int(ed)
-    es_idx = int(es)
-
     points = np.array([x, y]).T.reshape(-1, 1, 2)
     segments = np.concatenate([points[:-1], points[1:]], axis=1)
 
@@ -147,9 +139,6 @@ def plot_colormap_trajectory(x, y, esed, title, xlabel, ylabel, save_path,
     ax_traj.scatter(x[0], y[0], color="blue", label="t=0", zorder=3)
     ax_traj.scatter(x[-1], y[-1], color="red", label="t=T", zorder=3)
 
-    ax_traj.plot(x[ed_idx], y[ed_idx], marker="x", color="orange", markersize=8, markeredgewidth=2, label="ED")
-    ax_traj.plot(x[es_idx], y[es_idx], marker="x", color="green", markersize=8, markeredgewidth=2, label="ES")
-
     pad_x = (x.max() - x.min()) * 0.05 if x.max() > x.min() else 1.0
     pad_y = (y.max() - y.min()) * 0.05 if y.max() > y.min() else 1.0
     ax_traj.set_xlim(x.min() - pad_x, x.max() + pad_x)
@@ -166,16 +155,12 @@ def plot_colormap_trajectory(x, y, esed, title, xlabel, ylabel, save_path,
     ax_x.set_xlabel("Normalized time")
     ax_x.set_ylabel("D1")
     ax_x.grid(True, linestyle=":", alpha=0.6)
-    ax_x.plot(t[ed_idx], x[ed_idx], marker="x", color="orange", markersize=8, markeredgewidth=2)
-    ax_x.plot(t[es_idx], x[es_idx], marker="x", color="green", markersize=8, markeredgewidth=2)
 
     ax_y = fig.add_subplot(gs[1, 1])
     ax_y.scatter(t, y, color="black", s=1)
     ax_y.set_xlabel("Normalized time")
     ax_y.set_ylabel("D2")
     ax_y.grid(True, linestyle=":", alpha=0.6)
-    ax_y.plot(t[ed_idx], y[ed_idx], marker="x", color="orange", markersize=8, markeredgewidth=2)
-    ax_y.plot(t[es_idx], y[es_idx], marker="x", color="green", markersize=8, markeredgewidth=2)
 
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -183,7 +168,6 @@ def plot_colormap_trajectory(x, y, esed, title, xlabel, ylabel, save_path,
 plot_colormap_trajectory(
     z_motion[:, 0],
     z_motion[:, 1],
-    esed=(val_ds[idx]['metadata']['ESV'], val_ds[idx]['metadata']['EDV']),
     title="z_motion Trajectory",
     xlabel="D1",
     ylabel="D2",

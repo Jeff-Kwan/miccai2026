@@ -2,23 +2,23 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-# class CausalConv(nn.Module):
-#     def __init__(self, in_c, out_c):
-#         super(CausalConv, self).__init__()
-#         self.conv = nn.Conv3d(in_c, out_c, (2, 3, 3), 1, (0, 1, 1))
+class CausalConv(nn.Module):
+    def __init__(self, in_c, out_c):
+        super(CausalConv, self).__init__()
+        self.conv = nn.Conv3d(in_c, out_c, (2, 3, 3), 1, (0, 1, 1))
 
-#     def forward(self, x):
-#         x = F.pad(x, (0, 0, 0, 0, 1, 0))  # pad only the past in time dimension
-#         return self.conv(x)
+    def forward(self, x):
+        x = F.pad(x, (0, 0, 0, 0, 1, 0))  # pad only the past in time dimension
+        return self.conv(x)
 
 class SpatioTemporalConvBlock(nn.Module):
     def __init__(self, channels):
         super(SpatioTemporalConvBlock, self).__init__()
         self.convs = nn.Sequential(
-            nn.Conv3d(channels, channels, 3, 1, 1),
+            CausalConv(channels, channels),
             nn.GroupNorm(4, channels),
             nn.GELU(),
-            nn.Conv3d(channels, channels, 3, 1, 1))
+            CausalConv(channels, channels))
 
     def forward(self, x):
         return x + self.convs(x)
@@ -45,7 +45,7 @@ class ConvEncoder(nn.Module):
         level_blocks = {}; downs = {}
         for level in range(levels):
             level_blocks[f"{level}"] = nn.Sequential(
-                *[SpatioTemporalConvBlock(init_c * (2 ** level))
+                *[SpatioConvBlock(init_c * (2 ** level))
                     for _ in range(layers)],
                 nn.GroupNorm(1, init_c * (2 ** level)))
             downs[f"{level}"] = nn.Conv3d(init_c*(2**level), init_c*(2** (level + 1)),
@@ -121,7 +121,8 @@ class MotionLatentAE(nn.Module):
         return torch.linalg.svdvals(A.float()).to(A.dtype)
 
     @torch.no_grad()
-    def batch_effective_rank(self, s, eps: float = 1e-12):
+    def batch_effective_rank(self, z, eps: float = 1e-12):
+        s = self.svdvals_fp32(z)
         e = s.square()
         p = e / (e.sum(dim=-1, keepdim=True) + eps)
         p_safe = p.clamp_min(eps)
@@ -137,24 +138,28 @@ class MotionLatentAE(nn.Module):
         return H.mean()
 
 
-    def schatten_p_mean_power(self, s: torch.Tensor, p: float = 1.0, eps: float = 1e-12):
-        if p <= 0:
-            return (s.clamp_min(eps).pow(p).mean(dim=-1)).mean()
-        else:
+    def schatten_p_mean_power(self, s: torch.Tensor, p: float = 1.0):
             return (s.pow(p).mean(dim=-1)).mean()
 
+    def random_permute_dim(self, x: torch.Tensor, dim: int):
+        perm = torch.randperm(x.size(dim), device=x.device)
+        return x.index_select(dim, perm)
         
     def forward(self, x):
         z, skips = self.encoder(x)
 
         z = self.down(z)
-        # v = z - z.mean(dim=2, keepdim=True)
-        self.v = (z[:, :, 1:, :, :] - z[:, :, :-1, :, :]).squeeze() # [B, C, T]
-        s = self.svdvals_fp32(self.v)
-        self.effective_rank = self.batch_effective_rank(s).mean()
+
+        with torch.no_grad():
+            self.z_motion = (z - z.mean(dim=2, keepdim=True)).squeeze()
+            self.effective_rank = self.batch_effective_rank(self.z_motion).mean()
+
         if self.training:
-            self.latent_reg = self.spectral_entropy_penalty(s) +\
-                                self.schatten_p_mean_power(s, p=1.0)
+            # s = self.svdvals_fp32((z - self.random_permute_dim(z, dim=2)).squeeze())
+            # self.latent_reg = self.spectral_entropy_penalty(s)
+            self.latent_reg = z.std(dim=2) * torch.linspace(0, 2, self.latent*2, device=z.device).view(1, 1, -1, 1, 1)
+            self.latent_reg = self.latent_reg.mean()
+            
         z = self.up(z)
 
         if self.skips:
