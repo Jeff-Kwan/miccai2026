@@ -152,6 +152,19 @@ def unzip_echonet(zip_path="data/echodyna/echonetdynamic-2/EchoNet-Dynamic.zip",
     os.remove(zip_path)
     shutil.rmtree(os.path.dirname(zip_path))
 
+    # Move everything from data/echodyna/EchoNet-Dynamic into data/echodyna
+    extracted_dir = os.path.join(extract_to, "EchoNet-Dynamic")
+    for item in os.listdir(extracted_dir):
+        s = os.path.join(extracted_dir, item)
+        d = os.path.join(extract_to, item)
+        if os.path.isdir(s):
+            shutil.move(s, d)
+        else:
+            shutil.move(s, d)
+    
+    # delete data/echodyna/EchoNet-Dynamic
+    shutil.rmtree(extracted_dir)
+
 if __name__ == "__main__":
     main()
     unzip_echonet()
