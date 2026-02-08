@@ -19,18 +19,18 @@ output_dir = f"results/{date}/{timestamp}_MLAE"
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 200
+epochs = 50
 batch_size = 32
 learning_rate = 1e-4
 weight_decay = 1e-2
 max_frames = 64
-LAMBDAlat= 2e-4
+LAMBDAlat= 1e-4
 
-torch.backends.cudnn.enabled = True
+# torch.backends.cudnn.enabled = True
 # torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision('medium')
-precision = torch.bfloat16
+precision = torch.float32
 
 model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, 
                            dec_layers=2, levels=5, skips=False)
@@ -419,7 +419,7 @@ train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(
     "data/echodyna/VolumeTracings.csv",
     load_video=True)
 
-def collate_fn(batch, apply_augs=False):
+def collate_fn(batch):
     # Random sample to the minimum number of frames in the batch, with max cap
     min_frames = min(min(item['video'].shape[1] for item in batch), max_frames)
     for item in batch:
@@ -431,18 +431,13 @@ def collate_fn(batch, apply_augs=False):
         else:
             item['video'] = item['video'][:, :min_frames, :, :]
     videos = torch.stack([item['video'] for item in batch])  # [B, C, T, H, W]
-    if apply_augs:
-        videos = fps_jitter(videos)
-        aug_videos = augmentations(videos.transpose(1, 2)).transpose(1, 2).contiguous()
-        return {'video': videos, 'aug_video': aug_videos}
-    else:
-        return {'video': videos}
+    return {'video': videos}
 
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, 
-                      collate_fn=lambda b: collate_fn(b, apply_augs=True),
-                      num_workers=32, pin_memory=True, persistent_workers=True)
-val_dl = DataLoader(val_ds, batch_size=1, shuffle=True, num_workers=32, pin_memory=True,
-                    collate_fn=lambda b: collate_fn(b, apply_augs=False))
+                      collate_fn=collate_fn,
+                      num_workers=48, pin_memory=True, persistent_workers=True)
+val_dl = DataLoader(val_ds, batch_size=1, shuffle=True, num_workers=48, pin_memory=True,
+                    collate_fn=collate_fn)
 
 
 # Training 
@@ -457,7 +452,11 @@ for epoch in range(epochs):
     p_bar = tqdm(train_dl, desc=f"Epoch {epoch+1}/{epochs}")
     for batch in p_bar:
         videos = batch['video'].to(device, non_blocking=True)  # [B, C, T, H, W]
-        aug_videos = batch['aug_video'].to(device, non_blocking=True)  # [B, C, T, H, W]
+
+        # Augmentations
+        videos = fps_jitter(videos)
+        aug_videos = augmentations(videos.transpose(1, 2)).transpose(1, 2).contiguous()
+
         optimizer.zero_grad()
 
         # Pad to max_frames if needed

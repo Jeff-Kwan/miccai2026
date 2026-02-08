@@ -120,92 +120,28 @@ class MotionLatentAE(nn.Module):
     def svdvals_fp32(self, A):
         return torch.linalg.svdvals(A.float()).to(A.dtype)
 
-    def spectral_entropy_penalty(
-        self,
-        X: torch.Tensor,
-        matrix_dims,
-        eps: float = 1e-12,
-        reduction: str = "mean",
-        normalized: bool = True,
-    ):
-        row_dim, col_dim = matrix_dims
-        ndim = X.ndim
-        row_dim %= ndim
-        col_dim %= ndim
-        if row_dim == col_dim:
-            raise ValueError("matrix dimensions must be different")
+    @torch.no_grad()
+    def batch_effective_rank(self, s, eps: float = 1e-12):
+        e = s.square()
+        p = e / (e.sum(dim=-1, keepdim=True) + eps)
+        p_safe = p.clamp_min(eps)
+        H = -(p * p_safe.log()).sum(dim=-1)
+        return H.exp()
 
-        batch_dims = [d for d in range(ndim) if d not in (row_dim, col_dim)]
-        perm = batch_dims + [row_dim, col_dim]
-        Y = X.permute(*perm).contiguous()
 
-        batch_shape = Y.shape[:-2]
-        m, n = Y.shape[-2:]
-        Y = Y.reshape(-1, m, n)
+    def spectral_entropy_penalty(self, s: torch.Tensor, eps: float = 1e-12):
+        w = s.square()
+        p = w / (w.sum(dim=-1, keepdim=True) + eps)
+        p_safe = p.clamp_min(eps)
+        H = -(p * p_safe.log()).sum(dim=-1)
+        return H.mean()
 
-        s = self.svdvals_fp32(Y)
-        p = s / (s.sum(dim=-1, keepdim=True) + eps)
-        H = -(p * (p + eps).log()).sum(dim=-1)
 
-        if normalized:
-            k = min(m, n)
-            H = H / (torch.log(torch.tensor(float(k), device=H.device)) + eps)
-
-        H = H.reshape(batch_shape)
-
-        if reduction == "mean":
-            return H.mean()
-        elif reduction == "sum":
-            return H.sum()
-        elif reduction == "none":
-            return H
+    def schatten_p_mean_power(self, s: torch.Tensor, p: float = 1.0, eps: float = 1e-12):
+        if p <= 0:
+            return (s.clamp_min(eps).pow(p).mean(dim=-1)).mean()
         else:
-            raise ValueError("Invalid reduction")
-
-    def logdet_spectral_penalty(
-        self,
-        X: torch.Tensor,
-        matrix_dims,
-        eps: float = 1e-8,
-        reduction: str = "mean",
-        squared: bool = False,
-    ):
-        row_dim, col_dim = matrix_dims
-        ndim = X.ndim
-        row_dim %= ndim
-        col_dim %= ndim
-        if row_dim == col_dim:
-            raise ValueError("matrix dimensions must be different")
-
-        batch_dims = [d for d in range(ndim) if d not in (row_dim, col_dim)]
-        perm = batch_dims + [row_dim, col_dim]
-        Y = X.permute(*perm).contiguous()
-
-        batch_shape = Y.shape[:-2]
-        m, n = Y.shape[-2:]
-        Y = Y.reshape(-1, m, n)
-
-        # singular values
-        s = self.svdvals_fp32(Y)
-
-        # Mean is scaling factor
-        if squared:
-            # corresponds to logdet(X^T X + eps I) up to a constant
-            penalty = torch.log(s**2 + eps).mean(dim=-1)
-        else:
-            # stronger tail suppression but steeper gradients near zero
-            penalty = torch.log(s + eps).mean(dim=-1)
-
-        penalty = penalty.reshape(batch_shape)
-
-        if reduction == "mean":
-            return penalty.mean()
-        elif reduction == "sum":
-            return penalty.sum()
-        elif reduction == "none":
-            return penalty
-        else:
-            raise ValueError("Invalid reduction")
+            return (s.pow(p).mean(dim=-1)).mean()
 
         
     def forward(self, x):
@@ -214,10 +150,10 @@ class MotionLatentAE(nn.Module):
         z = self.down(z)
         v = z - z.mean(dim=2, keepdim=True)
         self.v = v.squeeze()    # [B, latent, T]
-        with torch.no_grad():
-            self.effective_rank = self.spectral_entropy_penalty(v, matrix_dims=(1, 2)).exp()
-        self.latent_reg = self.spectral_entropy_penalty(v, matrix_dims=(1, 2)) +\
-                            self.logdet_spectral_penalty(v, matrix_dims=(1, 2), squared=True)
+        s = self.svdvals_fp32(self.v)
+        self.effective_rank = self.batch_effective_rank(s).mean()
+        self.latent_reg = self.spectral_entropy_penalty(s) +\
+                            self.schatten_p_mean_power(s, p=1.0)
         z = self.up(z)
 
         if self.skips:
