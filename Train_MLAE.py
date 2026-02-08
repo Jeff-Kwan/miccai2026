@@ -29,17 +29,18 @@ batch_size = 32
 learning_rate = 1e-4
 weight_decay = 1e-2
 max_frames = 64
-LAMBDAlat= 1e-3
+LAMBDAlat= 1e-4
 
 torch.backends.cudnn.enabled = True
-# torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.allow_tf32 = True
-torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision('medium')
+precision = torch.bfloat16
 
 model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, 
                            dec_layers=2, levels=5, skips=False)
 model = model.to(device)
-# model = torch.compile(model)
+model = torch.compile(model)
 print(f"Initialized MLAE with {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M trainable parameters.")
 
 
@@ -438,8 +439,8 @@ def collate_fn(batch):
     return {'video': videos}
 
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=collate_fn, 
-                      num_workers=16, pin_memory=True, persistent_workers=True)
-val_dl = DataLoader(val_ds, batch_size=1, shuffle=True, num_workers=16)
+                      num_workers=32, pin_memory=True, persistent_workers=True)
+val_dl = DataLoader(val_ds, batch_size=1, shuffle=True, num_workers=32, pin_memory=True)
 
 
 # Training 
@@ -467,11 +468,11 @@ for epoch in range(epochs):
             pad = (0, 0, 0, 0, 0, max_frames - T)  # pad T dimension at the end
             aug_videos = F.pad(aug_videos, pad, mode='constant', value=0)
 
-        x_rec = model(aug_videos)[:, :, :T, :, :]  # [B, C, T, H, W]
-        
-        mse_loss = criterion(x_rec, videos)
-        
-        loss = mse_loss + model.latent_reg * LAMBDAlat
+        with torch.autocast(device_type='cuda', dtype=precision):
+            x_rec = model(aug_videos)[:, :, :T, :, :]  # [B, C, T, H, W]
+            mse_loss = criterion(x_rec, videos)
+            loss = mse_loss + model.latent_reg * LAMBDAlat
+
         loss.backward()
         norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -488,9 +489,9 @@ for epoch in range(epochs):
         p_bar = tqdm(val_dl, desc=f"Validation Epoch {epoch+1}/{epochs}")
         for batch in p_bar:
             videos = batch['video'].to(device, non_blocking=True)
-            x_rec = model(videos)
-            
-            mse_loss = criterion(x_rec, videos)
+            with torch.autocast(device_type='cuda', dtype=precision):
+                x_rec = model(videos)
+                mse_loss = criterion(x_rec, videos)
             val_loss += mse_loss.item() * videos.size(0)
             rank += model.effective_rank.item() * videos.size(0)
             p_bar.set_postfix({'MSE Loss': mse_loss.item()})

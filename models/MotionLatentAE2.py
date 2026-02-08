@@ -117,6 +117,9 @@ class MotionLatentAE(nn.Module):
         self.down = nn.Conv3d(latent, latent*2, (1, 2, 2), (1, 2, 2), 0)
         self.up = nn.ConvTranspose3d(latent*2, latent, (1, 2, 2), (1, 2, 2), 0)
 
+    def svdvals_fp32(self, A):
+        return torch.linalg.svdvals(A.float()).to(A.dtype)
+
     def spectral_entropy_penalty(
         self,
         X: torch.Tensor,
@@ -140,7 +143,7 @@ class MotionLatentAE(nn.Module):
         m, n = Y.shape[-2:]
         Y = Y.reshape(-1, m, n)
 
-        s = torch.linalg.svdvals(Y)
+        s = self.svdvals_fp32(Y)
         p = s / (s.sum(dim=-1, keepdim=True) + eps)
         H = -(p * (p + eps).log()).sum(dim=-1)
 
@@ -158,7 +161,7 @@ class MotionLatentAE(nn.Module):
             return H
         else:
             raise ValueError("Invalid reduction")
-    
+
     def logdet_spectral_penalty(
         self,
         X: torch.Tensor,
@@ -183,7 +186,7 @@ class MotionLatentAE(nn.Module):
         Y = Y.reshape(-1, m, n)
 
         # singular values
-        s = torch.linalg.svdvals(Y)
+        s = self.svdvals_fp32(Y)
 
         # Mean is scaling factor
         if squared:
