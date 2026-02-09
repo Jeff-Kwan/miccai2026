@@ -2,7 +2,7 @@ import os, glob
 from typing import Dict, Any, List, Optional
 
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 
 class EchoDynaVideoDataset(Dataset):
     """
@@ -113,10 +113,10 @@ class EchoDynaDownstreamDataset(Dataset):
         masks_root: str,
         split: str,
         ext: str = ".pt",
-        device: Optional[torch.device] = None,        # keep None to stay on CPU
-        video_dtype: Optional[torch.dtype] = None,    # e.g. torch.float32 to upcast
-        masks_device: Optional[torch.device] = None,  # optionally keep masks on CPU while video on GPU (or vice versa)
-        allow_missing_masks: bool = True,             # if False, error when mask file missing
+        device: Optional[torch.device] = None,
+        video_dtype: Optional[torch.dtype] = None,
+        masks_device: Optional[torch.device] = None,
+        allow_missing_masks: bool = True,
     ):
         self.split = split.upper()
 
@@ -127,8 +127,8 @@ class EchoDynaDownstreamDataset(Dataset):
         self.masks_split_dir = os.path.join(masks_root, self.split)
         self.has_masks_dir = os.path.isdir(self.masks_split_dir)
 
-        self.video_paths = sorted(glob.glob(os.path.join(self.video_split_dir, f"*{ext}")))
-        if len(self.video_paths) == 0:
+        video_paths = sorted(glob.glob(os.path.join(self.video_split_dir, f"*{ext}")))
+        if len(video_paths) == 0:
             raise FileNotFoundError(f"No {ext} files found in: {self.video_split_dir}")
 
         self.device = device
@@ -137,7 +137,11 @@ class EchoDynaDownstreamDataset(Dataset):
         self.allow_missing_masks = allow_missing_masks
         self.ext = ext
 
-        # Map basename -> mask path (if masks dir exists)
+        # Build basename -> path maps
+        self._video_by_base: Dict[str, str] = {
+            os.path.splitext(os.path.basename(p))[0]: p for p in video_paths
+        }
+
         self._mask_by_base: Dict[str, str] = {}
         if self.has_masks_dir:
             mask_paths = glob.glob(os.path.join(self.masks_split_dir, f"*{ext}"))
@@ -145,18 +149,25 @@ class EchoDynaDownstreamDataset(Dataset):
                 os.path.splitext(os.path.basename(p))[0]: p for p in mask_paths
             }
 
-        # Optionally enforce that every video has a mask
-        if not self.allow_missing_masks:
-            if not self.has_masks_dir:
+            # Keep ONLY paired items:
+            # - skip videos missing masks
+            # - skip masks missing videos
+            common_bases = sorted(set(self._video_by_base).intersection(self._mask_by_base))
+            self.video_paths = [self._video_by_base[b] for b in common_bases]
+            # shrink mask map to paired only (optional but keeps everything consistent)
+            self._mask_by_base = {b: self._mask_by_base[b] for b in common_bases}
+
+            # If masks dir exists and pairing yields nothing, it's usually a config/data issue.
+            if (not self.allow_missing_masks) and len(self.video_paths) == 0:
+                raise FileNotFoundError(
+                    f"No paired (video, mask) files found in: {self.video_split_dir} and {self.masks_split_dir}"
+                )
+
+        else:
+            # No masks dir: keep original behavior
+            if not self.allow_missing_masks:
                 raise FileNotFoundError(f"Missing masks split dir: {self.masks_split_dir}")
-            missing = []
-            for vp in self.video_paths:
-                base = os.path.splitext(os.path.basename(vp))[0]
-                if base not in self._mask_by_base:
-                    missing.append(base)
-            if missing:
-                ex = ", ".join(missing[:10]) + (" ..." if len(missing) > 10 else "")
-                raise FileNotFoundError(f"Masks missing for {len(missing)} videos (e.g. {ex})")
+            self.video_paths = video_paths
 
     def __len__(self) -> int:
         return len(self.video_paths)
@@ -188,27 +199,24 @@ class EchoDynaDownstreamDataset(Dataset):
             has_masks = True
 
             if self.masks_device is not None:
-                # Keep masks uint8; move device if requested
                 frame_indices = frame_indices.to(self.masks_device, non_blocking=True)
                 masks = masks.to(self.masks_device, non_blocking=True)
 
-        elif not self.allow_missing_masks:
+        elif (not self.allow_missing_masks) and self.has_masks_dir:
+            # In paired-only mode this shouldn't happen, but keep it as a guardrail.
             raise FileNotFoundError(f"Missing masks for item: {base} ({video_path})")
 
         return {
-            # video payload
             "video": video,
             "metadata": vp.get("metadata", {}),
             "fps": vp.get("fps", None),
             "size": vp.get("size", None),
             "source_path": vp.get("source_path", None),
 
-            # mask payload
             "frame_indices": frame_indices,
             "masks": masks,
             "has_masks": has_masks,
 
-            # bookkeeping
             "video_path": video_path,
             "mask_path": mask_path,
         }

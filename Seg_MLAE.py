@@ -1,5 +1,5 @@
 import torch 
-from datahandling.EchoDynaDataset import load_echonet_dynamic_datasets
+from datahandling.PreTrainEchoDynaDataset import load_echodyna_downstream_datasets
 from models.MotionLatentAE2 import MotionLatentAE
 import os
 import random
@@ -15,11 +15,11 @@ from tqdm import tqdm
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_06/19_57_MLAE"
+load_dir = "results/2026_02_08/17_44_MLAE"
 output_dir = os.path.join(load_dir, "LVSeg")
 os.makedirs(output_dir, exist_ok=True)
 
-model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, 
+model = MotionLatentAE(in_c=3, out_c=1, latent=256, enc_layers=4, 
                            dec_layers=2, levels=5, skips=True)
 pretrained = torch.load(os.path.join(load_dir, "MLAE.pth"), map_location=device)
 model_dict = model.state_dict()
@@ -31,7 +31,7 @@ model.encoder.requires_grad_(False)
 model.down.requires_grad_(False)
 # model.centroid_mlps.requires_grad_(False)
 # model.motion_mlp.requires_grad_(False)
-# model.motion_basis.requires_grad_(False)
+model.motion_basis.requires_grad_(False)
 
 # Training Parameters
 epochs = 100
@@ -48,9 +48,6 @@ train_params = {
 }
 
 comments = [
-    "Fine Tune Motion Latent AE",
-    "Use averaging as before",
-    "Focal + Dice, AdamW, CosineAnnealingLR",
 ]
 
 
@@ -295,83 +292,53 @@ def test_model(model, test_dl):
 # --------------------
 # Dataset + Dataloaders
 # --------------------
-train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(
-    "data/echodyna/FileList.csv",
-    "data/echodyna/Videos",
-    "data/echodyna/VolumeTracings.csv",
-    load_video=True
-)
+train_ds, val_ds, test_ds = load_echodyna_downstream_datasets(allow_missing_masks=False)
 
+def collate_fn(batch, frames):
+    # fixed clip length across batch
+    L = min(min(int(x["video"].shape[1]) for x in batch), int(frames))
+    if L <= 0:
+        raise RuntimeError("Invalid clip length computed (L <= 0).")
 
-def collate_fn(batch, apply_augs=False, max_frames=32):
-    kept_imgs = []
-    kept_masks = []
-    kept_keyframe_idxs = []
+    kept = []  # (clip, mask[1,H,W], key_in_clip)
+    for b, x in enumerate(batch):
+        v = x["video"]  # [C,T,H,W]
+        if not x.get("has_masks", False):
+            raise RuntimeError("Segmentation collate_fn requires has_masks=True for all items.")
 
-    # Fixed clip length for the batch (like your first collate)
-    Ts = [item["video"].shape[1] for item in batch]
-    L = min(min(Ts), max_frames)
+        fi = torch.as_tensor(x["frame_indices"], dtype=torch.long, device=v.device)
+        m = x["masks"]
+        m = m if torch.is_tensor(m) else torch.as_tensor(m)
+        if fi.numel() != 2 or m.ndim != 3 or m.shape[0] != 2:
+            raise RuntimeError(f"Expected 2 keyframes and masks [2,H,W], got fi={fi.numel()} m={tuple(m.shape)} for item {b}.")
 
-    for item in batch:
-        video = item["video"]  # [C, T, H, W]
-        C, T, H, W = video.shape
+        m = (m.to(v.device, non_blocking=True) > 0).float()  # [2,H,W]
+        T = v.shape[1]
 
-        orig_frames = torch.as_tensor(item["tracing"]["frames"], dtype=torch.long)
-        K = orig_frames.numel()
+        for k in (0, 1):
+            f = int(fi[k])
+            if not (0 <= f < T):
+                raise RuntimeError(f"Keyframe {f} out of bounds for T={T} (item {b}).")
 
-        if K > 0:
-            fmin = int(orig_frames.min().item())
-            fmax = int(orig_frames.max().item())
-            span = fmax - fmin + 1
-
-            # Impossible to include all keyframes in a length-L contiguous clip
-            if span > L:
+            lo, hi = max(0, f - L + 1), min(f, T - L)
+            if lo > hi:  # extra safety
                 continue
 
-            # Choose start so [start, start+L-1] contains [fmin, fmax]
-            start_low = max(0, fmax - L + 1)
-            start_high = min(fmin, T - L)
+            s = int(torch.randint(lo, hi + 1, (1,), device=v.device))
+            clip, mask = v[:, s:s + L], m[k].unsqueeze(0)
 
-            # This should now always be valid because span <= L
-            if start_low > start_high:
-                continue  # extra safety: skip if something is inconsistent
+            kept.append((clip, mask, f - s))
 
-            start = torch.randint(start_low, start_high + 1, (1,)).item()
+    if not kept:
+        raise RuntimeError(f"All samples were skipped (L={L}, frames={frames}).")
 
-            clip = video[:, start:start + L, :, :]                 # [C, L, H, W]
-            new_idx = orig_frames - start                          # [K] within [0, L-1]
+    imgs, masks, keyframe_idx = zip(*kept)
+    imgs = torch.stack(imgs)                       # [2*B,C,L,H,W]
+    masks = torch.stack(masks)                     # [2*B,1,H,W]
+    keyframe_idx = torch.tensor(keyframe_idx, device=imgs.device, dtype=torch.long)
 
-            m = torch.stack(item["tracing"]["masks"], dim=0).float()  # [K, H, W] (or [K,1,H,W] if yours differs)
-            if m.ndim == 4 and m.shape[1] == 1:
-                m = m[:, 0]  # -> [K, H, W]
-            m = (m > 0.5).float()
+    return {"imgs": imgs, "masks": masks, "keyframe_idx": keyframe_idx}
 
-        else:
-            # No keyframes: sample any contiguous window
-            start = 0 if T == L else torch.randint(0, T - L + 1, (1,)).item()
-            clip = video[:, start:start + L, :, :]
-            new_idx = orig_frames  # empty
-            m = torch.empty((0, H, W), dtype=torch.float32, device=video.device)
-
-        kept_imgs.append(clip)
-        kept_masks.append(m)
-        kept_keyframe_idxs.append(new_idx)
-
-    # If everything got skipped, fail fast so you notice (or handle upstream).
-    if len(kept_imgs) == 0:
-        raise RuntimeError(
-            f"All samples in batch were skipped because annotated span exceeded clip length L={L} "
-            f"(max_frames={max_frames})."
-        )
-
-    imgs = torch.stack(kept_imgs, dim=0)  # [B', C, L, H, W]
-    kept_masks = torch.stack(kept_masks, dim=0)  # list of [K_i, H, W]
-
-    return {
-        "imgs": imgs,
-        "masks": kept_masks,               # list of [K_i, H, W] (no padding)
-        "keyframe_idx": kept_keyframe_idxs # list of [K_i] (rebased indices)
-    }
 
 
 def train_collate_fn(batch):
@@ -482,7 +449,7 @@ for epoch in range(epochs):
         optimizer.zero_grad(set_to_none=True)
         imgs = augmentations(imgs.transpose(1, 2)).transpose(1, 2).contiguous()
         logits = model(imgs)
-        logits = torch.stack([logits_i[:, idx_i, :, :] for logits_i, idx_i in zip(logits, idx)]).squeeze()
+        logits = torch.stack([logits_i[:, idx_i, :, :] for logits_i, idx_i in zip(logits, idx)])
         focal = focal_loss(logits, masks)
         dloss = dice_loss(logits, masks)
         loss = focal + dloss
@@ -517,7 +484,7 @@ for epoch in range(epochs):
             idx = batch["keyframe_idx"]
 
             logits = model(imgs)
-            logits = torch.stack([logits_i[:, idx_i, :, :] for logits_i, idx_i in zip(logits, idx)]).squeeze()
+            logits = torch.stack([logits_i[:, idx_i, :, :] for logits_i, idx_i in zip(logits, idx)])
             focal = focal_loss(logits, masks)
             dloss = dice_loss(logits, masks)
             loss = focal + dloss
