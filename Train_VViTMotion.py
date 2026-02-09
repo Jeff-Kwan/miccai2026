@@ -309,7 +309,7 @@ def plot_recons(mae, val_ds, output_dir, device, clip_len=16, stride=2):
             axs[1, i].imshow(recon_np)
 
     plt.tight_layout()
-    plt.savefig(f"{output_dir}/recon.png", bbox_inches="tight")
+    plt.savefig(f"{output_dir}/recon_frame.png", bbox_inches="tight")
     plt.close(fig)
 
 @torch.no_grad()
