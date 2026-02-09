@@ -26,7 +26,7 @@ learning_rate = 2e-4
 weight_decay = 1e-2
 max_frames = 32
 
-torch.set_float32_matmul_precision('medium')
+torch.set_float32_matmul_precision('high')
 autocast = False
 
 enc = VideoViTEncoder(VideoViTCfg(dim=384, depth=8, heads=6, patch=8))
