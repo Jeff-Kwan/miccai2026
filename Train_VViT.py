@@ -20,13 +20,13 @@ output_dir = f"results/{date}/{timestamp}_VMAE"
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 100
+epochs = 300
 batch_size = 16
 learning_rate = 2e-4
 weight_decay = 1e-2
 max_frames = 32
 
-torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision('medium')
 autocast = False
 
 enc = VideoViTEncoder(VideoViTCfg(dim=384, depth=8, heads=6, patch=8))
@@ -235,29 +235,21 @@ class RandomVideoErasing(nn.Module):
 
         return out
 
-augmentations = v2.Identity()
-# augmentations = v2.Compose([
-#     v2.RandomApply([# Intensities
-#         v2.RandomChoice([
-#             v2.RandomChoice([# Intensity distribution
-#                 ClipBrightnessContrast(brightness=0.3, contrast=0.2),
-#                 RandomGamma(gamma=(0.7, 1.5))]),
-#             v2.RandomChoice([# Sharpness / Blur
-#                 v2.RandomAdjustSharpness(sharpness_factor=0.5, p=1),
-#                 v2.GaussianBlur(kernel_size=7, sigma=(0.25, 1.5))]),
-#             v2.RandomChoice([# Noise
-#                 v2.GaussianNoise(0, 0.05),
-#                 SpeckleNoise(std=(0.02, 0.1))])
-#         ])
-#     ], p=0.5),
-#     v2.RandomApply([# Masking
-#         v2.RandomChoice([
-#             FrameDropout(p=0.25),
-#             RandomVideoErasing(p=1.0,
-#             scale=(0.1, 0.25), ratio=(0.25, 4.0), t_scale=(1.0, 1.0), 
-#             value=0.0, num_cuboids_range=(1, 3))])
-#     ], p=0.0)
-# ])
+augmentations = v2.Compose([
+    v2.RandomApply([# Intensities
+        v2.RandomChoice([
+            v2.RandomChoice([# Intensity distribution
+                ClipBrightnessContrast(brightness=0.3, contrast=0.2),
+                RandomGamma(gamma=(0.7, 1.5))]),
+            v2.RandomChoice([# Sharpness / Blur
+                v2.RandomAdjustSharpness(sharpness_factor=0.5, p=1),
+                v2.GaussianBlur(kernel_size=7, sigma=(0.25, 1.5))]),
+            v2.RandomChoice([# Noise
+                v2.GaussianNoise(0, 0.05),
+                SpeckleNoise(std=(0.02, 0.1))])
+        ])
+    ], p=0.5),
+])
 
 
 # Functions
@@ -276,20 +268,21 @@ def plot_recons(mae, val_ds, output_dir, device, clip_len=16, stride=2):
     else:
         clip = video  # [C, T, H, W]
         clip_len = T  # adjust
+    clip = clip.transpose(0, 1)  # -> [T, C, H, W]
 
     # --- reconstruct full clip once, then subsample both orig and recon ---
     with torch.no_grad():
-        clip_batch = clip.unsqueeze(0).to(device)          # [1, C, clip_len, H, W]
-        recon = mae(clip_batch, return_pred=True)["pred"].squeeze(0).cpu()  # [C, clip_len, H, W]
+        clip_batch = clip.unsqueeze(0).to(device)
+        pred = mae(clip_batch, return_pred=True)["pred"]
+        recon = pred.squeeze(0).cpu()  # -> [C, T, H, W]
 
     clip = clip.cpu()
 
     # drop every other frame (or whatever stride is)
-    clip = clip[:, ::stride]
-    recon = recon[:, ::stride]
-    n_cols = clip.shape[1]
+    clip = clip[::stride]
+    recon = recon[::stride]
+    n_cols = clip.shape[0]
 
-    # helper: [C,H,W] tensor in [-1,1] -> numpy image in [0,1]
     def to_numpy(img_t):
         img_t = (img_t + 1.0) / 2.0
         arr = img_t.permute(1, 2, 0).numpy()
@@ -299,8 +292,8 @@ def plot_recons(mae, val_ds, output_dir, device, clip_len=16, stride=2):
     # --- plot ---
     fig, axs = plt.subplots(2, n_cols, figsize=(n_cols * 2, 4))
     for i in range(n_cols):
-        orig_np = to_numpy(clip[:, i])
-        recon_np = to_numpy(recon[:, i])
+        orig_np = to_numpy(clip[i])
+        recon_np = to_numpy(recon[i])
 
         axs[0, i].axis("off")
         axs[1, i].axis("off")
@@ -318,21 +311,16 @@ def plot_recons(mae, val_ds, output_dir, device, clip_len=16, stride=2):
 
 @torch.no_grad()
 def median_blur(x: torch.Tensor, padding_mode: str = "reflect") -> torch.Tensor:
-    """
-    3x3 median blur over H,W for x shaped [B, C, T, H, W].
-    Median is computed independently per (B,C,T) plane.
-
-    padding_mode: "reflect" (default), "replicate", or "circular".
-    """
     if x.ndim != 5:
-        raise ValueError(f"Expected x with 5 dims [B,C,T,H,W], got {tuple(x.shape)}")
-    B, C, T, H, W = x.shape
+        raise ValueError(f"Expected x with 5 dims [B,T,C,H,W], got {tuple(x.shape)}")
+
+    B, T, C, H, W = x.shape
     if H < 1 or W < 1:
         return x
 
     # Treat each time-step as an independent image in the batch
-    # [B,C,T,H,W] -> [B*T, C, H, W]
-    xt = x.permute(0, 2, 1, 3, 4).contiguous().view(B * T, C, H, W)
+    # [B,T,C,H,W] -> [B*T, C, H, W]
+    xt = x.contiguous().view(B * T, C, H, W)
 
     # Pad H,W by 1 on each side
     xt = F.pad(xt, pad=(1, 1, 1, 1), mode=padding_mode)
@@ -346,8 +334,8 @@ def median_blur(x: torch.Tensor, padding_mode: str = "reflect") -> torch.Tensor:
     # Median of 9 values = 5th smallest (k=5, 1-indexed)
     med = patches.kthvalue(k=5, dim=2).values  # [B*T, C, H*W]
 
-    # Back to [B, C, T, H, W]
-    out = med.view(B * T, C, H, W).view(B, T, C, H, W).permute(0, 2, 1, 3, 4).contiguous()
+    # Back to [B, T, C, H, W]
+    out = med.view(B, T, C, H, W).contiguous()
     return out
 
 
@@ -386,7 +374,7 @@ for epoch in range(epochs):
         videos = batch['video'].to(device, non_blocking=True)  # [B, C, T, H, W]
 
         # Augmentations
-        aug_videos = augmentations(videos.transpose(1, 2)).transpose(1, 2).contiguous()
+        aug_videos = augmentations(videos)
         videos = median_blur(videos)  # optional denoise targets
         optimizer.zero_grad()
 

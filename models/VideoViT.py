@@ -178,13 +178,13 @@ class MLP(nn.Module):
 class VideoBlock(nn.Module):
     def __init__(self, dim: int, heads: int, mlp_ratio: float, rope_base: float, eps: float):
         super().__init__()
-        self.n_spa = nn.LayerNorm(dim, eps=eps)
+        self.n_spa = nn.RMSNorm(dim, eps=eps)
         self.spa = MHSA(dim, heads, rope_base, rope_kind="2d")  # RoPE on patches
 
-        self.n_tmp = nn.LayerNorm(dim, eps=eps)
+        self.n_tmp = nn.RMSNorm(dim, eps=eps)
         self.tmp = MHSA(dim, heads, rope_base, rope_kind="1d")  # RoPE on (global CLS + frame CLS)
 
-        self.n_mlp = nn.LayerNorm(dim, eps=eps)
+        self.n_mlp = nn.RMSNorm(dim, eps=eps)
         self.mlp = MLP(dim, mlp_ratio)
 
     def forward(
@@ -253,7 +253,7 @@ class VideoViTEncoder(nn.Module):
             VideoBlock(cfg.dim, cfg.heads, cfg.mlp_ratio, cfg.rope_base, cfg.eps)
             for _ in range(cfg.depth)
         ])
-        self.norm = nn.LayerNorm(cfg.dim, eps=cfg.eps)
+        self.norm = nn.RMSNorm(cfg.dim, eps=cfg.eps)
         self._init()
 
     def _init(self):
@@ -268,9 +268,8 @@ class VideoViTEncoder(nn.Module):
                 nn.init.kaiming_normal_(m.weight, mode="fan_out")
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.LayerNorm):
+            elif isinstance(m, nn.RMSNorm):
                 nn.init.ones_(m.weight)
-                nn.init.zeros_(m.bias)
 
     @staticmethod
     def _check_keep_idx(keep_idx: torch.Tensor, B: int, T: int, N: int) -> torch.Tensor:
@@ -304,9 +303,11 @@ class VideoViTEncoder(nn.Module):
         idx = keep_bt.unsqueeze(-1).expand(-1, -1, D)
         p_vis = torch.gather(p, dim=1, index=idx)
 
-        cls = self.cls.expand(B * T, 1, -1)
+        # IMPORTANT for autocast: cast fp32 params to activation dtype before cat
+        cls = self.cls.to(dtype=p_vis.dtype, device=p_vis.device).expand(B * T, 1, -1)
         frames = torch.cat((cls, p_vis), dim=1).reshape(B, T, 1 + Nvis, D)
-        gcls = self.gcls.expand(B, 1, -1)
+
+        gcls = self.gcls.to(dtype=frames.dtype, device=frames.device).expand(B, 1, -1)
 
         for blk in self.blocks:
             gcls, frames = blk(gcls, frames, hw, patch_pos_idx=keep_idx)
@@ -353,7 +354,7 @@ class VideoViTDecoder(nn.Module):
             VideoBlock(cfg.dec_dim, cfg.dec_heads, cfg.mlp_ratio, cfg.rope_base, cfg.eps)
             for _ in range(cfg.dec_depth)
         ])
-        self.norm = nn.LayerNorm(cfg.dec_dim, eps=cfg.eps)
+        self.norm = nn.RMSNorm(cfg.dec_dim, eps=cfg.eps)
         self.head = nn.Linear(cfg.dec_dim, patch * patch * in_chans, bias=True)
 
         self._init()
@@ -366,9 +367,8 @@ class VideoViTDecoder(nn.Module):
                 trunc_normal_(m.weight)
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
-            elif isinstance(m, nn.LayerNorm):
+            elif isinstance(m, nn.RMSNorm):
                 nn.init.ones_(m.weight)
-                nn.init.zeros_(m.bias)
 
     @staticmethod
     def _check_keep_idx(keep_idx: torch.Tensor, B: int, T: int, N: int) -> torch.Tensor:
@@ -402,19 +402,25 @@ class VideoViTDecoder(nn.Module):
             raise ValueError("No masked tokens (Nmask<=0); increase mask ratio.")
 
         x = self.proj_in(enc_tokens)     # (B, T, 1+Nvis, Ddec)
+        work_dtype = x.dtype
+        work_dev = x.device
+
         fcls = x[:, :, :1, :]            # (B, T, 1, Ddec)
         vis = x[:, :, 1:, :]             # (B, T, Nvis, Ddec)
         Ddec = vis.size(-1)
 
+        # IMPORTANT for autocast: cast fp32 params to activation dtype before use
+        mask_tok = self.mask_token.to(dtype=work_dtype, device=work_dev)
+        g = self.gcls.to(dtype=work_dtype, device=work_dev).expand(B, 1, -1)
+
         # scatter visible into full grid of mask tokens
-        full = self.mask_token.expand(B * T, N, Ddec).clone()
+        full = mask_tok.expand(B * T, N, Ddec).clone()  # now already correct dtype/device
         vis_bt = vis.reshape(B * T, Nvis, Ddec)
         keep_bt = keep_idx.reshape(B * T, Nvis)
         full.scatter_(1, keep_bt.unsqueeze(-1).expand(-1, -1, Ddec), vis_bt)
 
-        patch_pos = torch.arange(N, device=enc_tokens.device).view(1, 1, N).expand(B, T, N)
+        patch_pos = torch.arange(N, device=work_dev).view(1, 1, N).expand(B, T, N)
         frames = torch.cat((fcls, full.view(B, T, N, Ddec)), dim=2)  # (B, T, 1+N, Ddec)
-        g = self.gcls.expand(B, 1, -1)
 
         for blk in self.blocks:
             g, frames = blk(g, frames, hw, patch_pos_idx=patch_pos)
@@ -422,7 +428,7 @@ class VideoViTDecoder(nn.Module):
         pred = self.head(self.norm(frames)[:, :, 1:, :])  # (B, T, N, patch_dim)
 
         # gather masked positions
-        keep_bool = torch.zeros(B * T, N, device=enc_tokens.device, dtype=torch.bool)
+        keep_bool = torch.zeros(B * T, N, device=work_dev, dtype=torch.bool)
         keep_bool.scatter_(1, keep_bt, True)
         mask_idx = (~keep_bool).nonzero(as_tuple=False)[:, 1].view(B * T, Nmask)  # stable order by index
 
@@ -435,22 +441,23 @@ class VideoViTDecoder(nn.Module):
 
 if __name__ == "__main__":
     torch.manual_seed(0)
-
-    enc = VideoViTEncoder(VideoViTCfg(dim=384, depth=8, heads=6, patch=8))
-    vid = torch.randn(2, 8, 3, 128, 128)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    enc = VideoViTEncoder(VideoViTCfg(dim=384, depth=8, heads=6, patch=8)).to(device)
+    vid = torch.randn(2, 8, 3, 128, 128, device=device)  # (B, T, C, H, W)
 
     N = (128 // 8) * (128 // 8)
     Nvis = N // 2
     keep_idx = torch.stack(
         [torch.stack([torch.randperm(N)[:Nvis] for _ in range(8)], dim=0) for _ in range(2)],
         dim=0,
-    )  # (B,T,Nvis)
+    ).to(device)  # (B,T,Nvis)
 
-    gcls, tok, hw = enc(vid, keep_idx=keep_idx)
-    print("enc:", gcls.shape, tok.shape, hw)  # (B,D), (B,T,1+Nvis,D)
-    print(f"enc params: {sum(p.numel() for p in enc.parameters())/1e6:.2f}M")
+    with torch.autocast('cuda', dtype=torch.bfloat16):
+        gcls, tok, hw = enc(vid, keep_idx=keep_idx)
+        print("enc:", gcls.shape, tok.shape, hw)  # (B,D), (B,T,1+Nvis,D)
+        print(f"enc params: {sum(p.numel() for p in enc.parameters())/1e6:.2f}M")
 
-    dec = VideoViTDecoder(enc_dim=384, patch=8, in_chans=3, cfg=VideoViTDecCfg(dec_dim=256, dec_depth=2, dec_heads=8))
-    masked = dec(tok, keep_idx=keep_idx, hw=hw)
-    print("dec:", masked.shape)  # (B,T,Nmask,patch_dim)
-    print(f"dec params: {sum(p.numel() for p in dec.parameters())/1e6:.2f}M")
+        dec = VideoViTDecoder(enc_dim=384, patch=8, in_chans=3, cfg=VideoViTDecCfg(dec_dim=256, dec_depth=2, dec_heads=8)).to(device)
+        masked = dec(tok, keep_idx=keep_idx, hw=hw)
+        print("dec:", masked.shape)  # (B,T,Nmask,patch_dim)
+        print(f"dec params: {sum(p.numel() for p in dec.parameters())/1e6:.2f}M")

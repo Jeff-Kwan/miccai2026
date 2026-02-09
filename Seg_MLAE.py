@@ -1,6 +1,6 @@
 import torch 
 from datahandling.PreTrainEchoDynaDataset import load_echodyna_downstream_datasets
-from models.MotionLatentAE2 import MotionLatentAE
+from models.MotionLatentAE3 import MotionLatentAE
 import os
 import random
 import matplotlib.pyplot as plt
@@ -15,7 +15,7 @@ from tqdm import tqdm
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_08/17_44_MLAE"
+load_dir = "results/2026_02_09/01_42_MLAE"
 output_dir = os.path.join(load_dir, "LVSeg")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -38,7 +38,7 @@ epochs = 100
 batch_size = 32
 learning_rate = 3e-4
 weight_decay = 1e-2
-frames = 64
+frames = 32
 
 train_params = {
     "epochs": epochs,

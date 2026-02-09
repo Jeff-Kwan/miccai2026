@@ -6,7 +6,8 @@ from torchvision.transforms import v2
 from tqdm import tqdm
 
 from datahandling.PreTrainEchoDynaDataset import load_echonet_dynamic_datasets
-from models.MotionLatentAE3 import MotionLatentAE
+from models.VideoViT import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
+from models.ViTMAEMotion import VideoMotionMAE, SimpleConvDecoder
 import os
 import random
 import matplotlib.pyplot as plt
@@ -15,58 +16,30 @@ from datetime import datetime
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 date = datetime.now().strftime("%Y_%m_%d")
 timestamp = datetime.now().strftime("%H_%M")
-output_dir = f"results/{date}/{timestamp}_MLAE"
+output_dir = f"results/{date}/{timestamp}_VMAE"
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 100
-batch_size = 32
-learning_rate = 3e-4
+epochs = 300
+batch_size = 16
+learning_rate = 2e-4
 weight_decay = 1e-2
 max_frames = 32
-# LAMBDAlat = 0.1
-warmup = 1
 
-# torch.backends.cudnn.enabled = True
-# torch.backends.cudnn.benchmark = True
-torch.backends.cudnn.allow_tf32 = True
-torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision('medium')
 autocast = False
 
-model = MotionLatentAE(in_c=3, out_c=3, latent=256, enc_layers=4, 
-                           dec_layers=2, levels=5, skips=False)
-model = model.to(device)
-# model = torch.compile(model)
-print(f"Initialized MLAE with {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e6:.2f}M trainable parameters.")
-
+enc = VideoViTEncoder(VideoViTCfg(dim=384, depth=8, heads=6, patch=8))
+dec = VideoViTDecoder(enc_dim=384, patch=8, in_chans=3, cfg=VideoViTDecCfg(dec_dim=256, dec_depth=2, dec_heads=8))
+frame_dec = SimpleConvDecoder(latent=384, out_dim=3, base=256)
+mae = VideoMotionMAE(enc, dec, frame_dec, motion_dim=2, norm_pix_loss=True, mask_ratio=0.75)
+mae = mae.to(device)
+# mae = torch.compile(mae)
+print(f"Initialized VMAE with {sum(p.numel() for p in mae.parameters() if p.requires_grad)/1e6:.2f}M trainable parameters.")
+optimizer = torch.optim.AdamW(mae.parameters(), lr=learning_rate, weight_decay=weight_decay)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
 # Augmentations
-class FPSJitter(nn.Module):
-    def __init__(self, k, min_keep=1, p=0.5):
-        super().__init__()
-        self.p = p
-        self.k = k
-        self.min_keep = min_keep
-
-    def forward(self, x):
-        if torch.rand(1).item() > self.p:
-            return x
-        # x: [B, C, T, H, W]
-        B, C, T, H, W = x.shape
-        if self.min_keep >= T:
-            return x
-        k = torch.rand(1, device=x.device) * (self.k[1] - self.k[0]) + self.k[0]
-        keep = (torch.rand(T, device=x.device) > k)  # [T] bool
-        keep = keep.to(torch.bool)
-        # always keep the first frame
-        keep[0] = True
-        if keep.sum().item() < self.min_keep:
-            required = int(self.min_keep - keep.sum().item())
-            if T - 1 > 0:
-                idx = torch.randperm(T - 1, device=x.device)[:required] + 1  # choose from 1..T-1
-                keep[idx] = True
-        return x[:, :, keep, :, :]
-
 class RandomGamma(nn.Module):
     def __init__(self, gamma=(0.7, 1.5)):
         super().__init__()
@@ -277,124 +250,107 @@ augmentations = v2.Compose([
                 SpeckleNoise(std=(0.02, 0.1))])
         ])
     ], p=0.5),
-    v2.RandomApply([# Masking
-        v2.RandomChoice([
-            FrameDropout(p=0.25),
-            RandomVideoErasing(p=1.0,
-            scale=(0.1, 0.25), ratio=(0.25, 4.0), t_scale=(1.0, 1.0), 
-            value=0.0, num_cuboids_range=(1, 3))])
-    ], p=0.0)
 ])
 
-# fps_jitter = FPSJitter(k=(0.1, 0.75), min_keep=8, p=0.2)
-fps_jitter = v2.Identity()
+
 
 # Functions
-def plot_recons(model, val_ds, output_dir):
-    n_cols = 8
-    # sample 8 random items from the validation dataset
-    idxs = torch.randperm(len(val_ds))[:n_cols]
-    videos_list = [val_ds[int(i)]['video'] for i in idxs]  # each: [C, T, H, W]
+def plot_recons(mae, val_ds, output_dir, device, clip_len=16, stride=2):
+    mae.eval()
+    os.makedirs(output_dir, exist_ok=True)
 
-    # pick a random frame from each and make single-frame videos [C,1,H,W]
-    samples = []
-    for v in videos_list:
-        T = v.shape[1]
-        f = random.randint(0, T - 1)
-        samples.append(v[:, f : f + 1, :, :])
-    batch = torch.stack(samples)  # [B, C, 1, H, W]
-
-    # run through model
-    model.eval()
-    with torch.no_grad():
-        batch_device = batch.to(device)
-        recon_batch = model(batch_device)[0]
-        recon_batch = recon_batch.cpu()
-    batch = batch.cpu()
-
-    # helper to convert tensor [C,H,W] -> numpy HxW or HxWx3
-    def to_numpy(img_t):
-        # [-1, 1] to [0, 1]
-        img_t = (img_t + 1.0) / 2.0
-        arr = img_t.permute(1, 2, 0).numpy()
-        arr = arr.clip(0.0, 1.0)
-        if arr.shape[2] == 1:
-            arr = arr[:, :, 0]
-        return arr
-
-    # plot 2 rows x 8 cols: top original, bottom reconstructed
-    fig, axs = plt.subplots(2, n_cols, figsize=(n_cols * 2, 4))
-    for i in range(n_cols):
-        orig = batch[i][:, 0, :, :]       # [C, H, W]
-        recon = recon_batch[i][:, 0, :, :]  # [C, H, W]
-        orig_np = to_numpy(orig)
-        recon_np = to_numpy(recon)
-
-        axs[0, i].axis("off")
-        axs[1, i].axis("off")
-        if orig_np.ndim == 2:
-            axs[0, i].imshow(orig_np, cmap="gray")
-            axs[1, i].imshow(recon_np, cmap="gray")
-        else:
-            axs[0, i].imshow(orig_np)
-            axs[1, i].imshow(recon_np)
-
-    plt.tight_layout()
-    plt.savefig(f"{output_dir}/recon_frames.png", bbox_inches="tight")
-    plt.clf()
-
-    # Then pick a video to recon 16 consecutive frames
-    vid_idx = idxs[0]
-    video = val_ds[int(vid_idx)]['video']  # [C, T, H, W]
+    # --- sample one random validation video ---
+    vid_idx = int(torch.randint(len(val_ds), (1,)).item())
+    video = val_ds[vid_idx]["video"]  # expected [C, T, H, W]
     T = video.shape[1]
-    if T >= 16:
-        start_frame = random.randint(0, T - 16)
+
+    # --- choose start so we can grab clip_len frames ---
+    if T >= clip_len:
+        start = int(torch.randint(0, T - clip_len + 1, (1,)).item())
+        clip = video[:, start : start + clip_len]  # [C, clip_len, H, W]
+        curr_len = clip_len
     else:
-        start_frame = 0
-    clip = video[:, start_frame : start_frame + 16, :, :]  # [C, 16, H, W]
-    clip_batch = clip.unsqueeze(0).to(device)  # [1, C, 16, H, W]
-    model.eval()
+        clip = video  # [C, T, H, W]
+        curr_len = T
+
+    # to [T, C, H, W]
+    clip = clip.transpose(0, 1)
+
+    # --- forward once ---
     with torch.no_grad():
-        recon_clip_batch = model(clip_batch)[0]
-        recon_clip_batch = recon_clip_batch.cpu()  # [1, C, 16, H, W]
-    clip = clip.cpu()
-    recon_clip = recon_clip_batch[0]  # [C, 16, H, W]
-    fig, axs = plt.subplots(2, 16, figsize=(32, 4))
-    for i in range(16):
-        orig = clip[:, i, :, :]       # [C, H, W]
-        recon = recon_clip[:, i, :, :]  # [C, H, W]
-        orig_np = to_numpy(orig)
-        recon_np = to_numpy(recon)
+        clip_batch = clip.unsqueeze(0).to(device)  # [1, T, C, H, W]
+        out = mae(clip_batch, return_pred=True, return_frame_pred=True)
 
-        axs[0, i].axis("off")
-        axs[1, i].axis("off")
-        if orig_np.ndim == 2:
-            axs[0, i].imshow(orig_np, cmap="gray")
-            axs[1, i].imshow(recon_np, cmap="gray")
-        else:
-            axs[0, i].imshow(orig_np)
-            axs[1, i].imshow(recon_np)
-    plt.tight_layout()
-    plt.savefig(f"{output_dir}/recon_video.png", bbox_inches="tight")    
-    plt.close()
+        pred_frames = out["pred_frames"]  # likely [1, T, C, H, W] (or similar)
+        pred_mae = out["pred"]            # likely [1, T, C, H, W] (or similar)
 
-@torch.no_grad()  # remove if you need gradients (median is piecewise-constant anyway)
+    # --- squeeze batch and move to cpu; ensure [T, C, H, W] ---
+    def normalize_to_TCHW(x):
+        x = x.squeeze(0).detach().cpu()
+        # common alternatives: [C, T, H, W] -> transpose to [T, C, H, W]
+        if x.ndim == 4 and x.shape[0] in (1, 3) and x.shape[1] == curr_len:
+            # x is [C, T, H, W]
+            x = x.transpose(0, 1)
+        return x  # [T, C, H, W] expected
+
+    pred_frames = normalize_to_TCHW(pred_frames)
+    pred_mae = normalize_to_TCHW(pred_mae)
+
+    clip_cpu = clip.detach().cpu()  # [T, C, H, W]
+
+    # --- subsample ---
+    clip_cpu = clip_cpu[::stride]
+    pred_frames = pred_frames[::stride]
+    pred_mae = pred_mae[::stride]
+    n_cols = clip_cpu.shape[0]
+
+    def to_numpy(img_t):
+        # assumes img_t in [-1, 1]
+        img_t = (img_t + 1.0) / 2.0
+        arr = img_t.permute(1, 2, 0).numpy()  # [H, W, C]
+        arr = arr.clip(0.0, 1.0)
+        return arr[:, :, 0] if arr.shape[2] == 1 else arr
+
+    def plot_and_save(recon_clip_TCHW, save_path):
+        fig, axs = plt.subplots(2, n_cols, figsize=(n_cols * 2, 4))
+        if n_cols == 1:
+            # matplotlib returns 1D axes when n_cols == 1; normalize to 2D indexing
+            axs = axs.reshape(2, 1)
+
+        for i in range(n_cols):
+            orig_np = to_numpy(clip_cpu[i])
+            recon_np = to_numpy(recon_clip_TCHW[i])
+
+            axs[0, i].axis("off")
+            axs[1, i].axis("off")
+
+            if orig_np.ndim == 2:
+                axs[0, i].imshow(orig_np, cmap="gray")
+                axs[1, i].imshow(recon_np, cmap="gray")
+            else:
+                axs[0, i].imshow(orig_np)
+                axs[1, i].imshow(recon_np)
+
+        plt.tight_layout()
+        plt.savefig(save_path, bbox_inches="tight")
+        plt.close(fig)
+
+    plot_and_save(pred_frames, os.path.join(output_dir, "recon_frame.png"))
+    plot_and_save(pred_mae, os.path.join(output_dir, "recon_mae.png"))
+
+
+@torch.no_grad()
 def median_blur(x: torch.Tensor, padding_mode: str = "reflect") -> torch.Tensor:
-    """
-    3x3 median blur over H,W for x shaped [B, C, T, H, W].
-    Median is computed independently per (B,C,T) plane.
-
-    padding_mode: "reflect" (default), "replicate", or "circular".
-    """
     if x.ndim != 5:
-        raise ValueError(f"Expected x with 5 dims [B,C,T,H,W], got {tuple(x.shape)}")
-    B, C, T, H, W = x.shape
+        raise ValueError(f"Expected x with 5 dims [B,T,C,H,W], got {tuple(x.shape)}")
+
+    B, T, C, H, W = x.shape
     if H < 1 or W < 1:
         return x
 
     # Treat each time-step as an independent image in the batch
-    # [B,C,T,H,W] -> [B*T, C, H, W]
-    xt = x.permute(0, 2, 1, 3, 4).contiguous().view(B * T, C, H, W)
+    # [B,T,C,H,W] -> [B*T, C, H, W]
+    xt = x.contiguous().view(B * T, C, H, W)
 
     # Pad H,W by 1 on each side
     xt = F.pad(xt, pad=(1, 1, 1, 1), mode=padding_mode)
@@ -408,10 +364,9 @@ def median_blur(x: torch.Tensor, padding_mode: str = "reflect") -> torch.Tensor:
     # Median of 9 values = 5th smallest (k=5, 1-indexed)
     med = patches.kthvalue(k=5, dim=2).values  # [B*T, C, H*W]
 
-    # Back to [B, C, T, H, W]
-    out = med.view(B * T, C, H, W).view(B, T, C, H, W).permute(0, 2, 1, 3, 4).contiguous()
+    # Back to [B, T, C, H, W]
+    out = med.view(B, T, C, H, W).contiguous()
     return out
-
 
 
 # Dataset
@@ -429,100 +384,71 @@ def collate_fn(batch):
         else:
             item['video'] = item['video'][:, :min_frames, :, :]
     videos = torch.stack([item['video'] for item in batch])  # [B, C, T, H, W]
+    videos = videos.permute(0, 2, 1, 3, 4).contiguous()  # [B, T, C, H, W]
     return {'video': videos}
 
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, 
                       collate_fn=collate_fn,
-                      num_workers=16, pin_memory=True, persistent_workers=True)
-val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=16, pin_memory=True,
+                      num_workers=60, pin_memory=True, persistent_workers=True)
+val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=32, pin_memory=True,
                     collate_fn=collate_fn)
 
 
 # Training 
-criterion = nn.MSELoss()
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
-
-train_losses = []; val_losses = []; pred_losses = []
+train_losses = []; val_losses = []
 for epoch in range(epochs):
-    model.train()
+    mae.train()
     train_loss = 0.0; pred_loss = 0.0
     p_bar = tqdm(train_dl, desc=f"Epoch {epoch+1}/{epochs}")
     for batch in p_bar:
-        videos = batch['video'].to(device, non_blocking=True)  # [B, C, T, H, W]
+        videos = batch['video'].to(device, non_blocking=True)
 
         # Augmentations
-        videos = fps_jitter(videos)
-        aug_videos = augmentations(videos.transpose(1, 2)).transpose(1, 2).contiguous()
-
+        aug_videos = augmentations(videos)
+        videos = median_blur(videos)  # optional denoise targets
         optimizer.zero_grad()
 
-        # Pad to max_frames if needed
-        # T = aug_videos.size(2)
-        # if T < max_frames:
-        #     pad = (0, 0, 0, 0, 0, max_frames - T)  # pad T dimension at the end
-        #     aug_videos = F.pad(aug_videos, pad, mode='constant', value=0)
-
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=autocast):
-            x_rec, x_pred = model(aug_videos)  # [B, C, T, H, W]
-            mse_loss = criterion(x_rec, videos)
-            pmse_loss = criterion(x_pred, videos[:, :, 1:, :, :])  # predict next frame, so compare to t=1..T-1
-            loss = mse_loss + pmse_loss
+            loss = mae(aug_videos, return_pred=False)["loss"]
 
         loss.backward()
-        norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        norm = nn.utils.clip_grad_norm_(mae.parameters(), max_norm=1.0)
         optimizer.step()
     
-        train_loss += mse_loss.item() * videos.size(0)
-        p_bar.set_postfix({'Recon': mse_loss.item(), 'Pred': pmse_loss.item(), 'Grad Norm': norm.item()})
+        train_loss += loss.item() * videos.size(0)
+        p_bar.set_postfix({'Recon': loss.item(), 'Grad Norm': norm.item()})
         
     train_loss /= len(train_dl.dataset)
     train_losses.append(train_loss)
     
-    model.eval()
+    mae.eval()
     val_loss = 0.0
     with torch.no_grad():
         p_bar = tqdm(val_dl, desc=f"Validation Epoch {epoch+1}/{epochs}")
         for batch in p_bar:
             videos = batch['video'].to(device, non_blocking=True)
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=autocast):
-                x_rec, x_pred = model(videos)
-                mse_loss = criterion(x_rec, videos)
-                pmse_loss = criterion(x_pred, videos[:, :, 1:, :, :])
-            val_loss += mse_loss.item() * videos.size(0)
-            pred_loss += pmse_loss.item() * videos.size(0)
-            p_bar.set_postfix({'Recon': mse_loss.item()})
-            
+                loss = mae(videos, return_pred=False)["loss"]
+            val_loss += loss.item() * videos.size(0)
+            p_bar.set_postfix({'Recon': loss.item()})
             
     val_loss /= len(val_dl.dataset)
-    val_losses.append(val_loss)
-    pred_loss = pred_loss / len(val_dl.dataset)
-    pred_losses.append(pred_loss)
-    
+    val_losses.append(val_loss)    
     scheduler.step()
     
-    print(f"Epoch [{epoch+1}/{epochs}], Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Pred Loss: {pred_loss:.4f}")
-
-    # Saving model, reconstructions, losses
-    torch.save(model.state_dict(), f"{output_dir}/MLAE.pth")
-    plot_recons(model, val_ds, output_dir)
+    print(f"Epoch [{epoch+1}/{epochs}], Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+    # Saving mae, reconstructions, losses
+    torch.save(mae.state_dict(), f"{output_dir}/VMAE.pth")
+    plot_recons(mae, val_ds, output_dir, device)
     
-    fig, ax1 = plt.subplots(figsize=(8, 6))
-    ax1.plot(range(1, epoch + 2), train_losses, label='Training', color='tab:blue')
-    ax1.plot(range(1, epoch + 2), val_losses, label='Validation', color='tab:orange')
-    ax1.set_xlabel('Epoch')
-    ax1.set_ylabel('Reconstruction Loss', color='tab:blue')
-    ax1.tick_params(axis='y', labelcolor='tab:blue')
-    ax1.set_yscale('log')
-    ax1.legend(loc='upper left')
-    
-    ax2 = ax1.twinx()
-    ax2.plot(range(1, epoch + 2), pred_losses, label='PredLoss', color='tab:green')
-    ax2.set_ylabel('Prediction Loss', color='tab:green')
-    ax2.tick_params(axis='y', labelcolor='tab:green')
-    ax2.legend(loc='upper right')
-    
-    plt.title('Losses over Epochs')
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.plot(range(1, epoch + 2), train_losses, label='Training', color='tab:blue')
+    ax.plot(range(1, epoch + 2), val_losses, label='Validation', color='tab:orange')
+    ax.set_xlabel('Epoch')
+    ax.set_ylabel('Reconstruction Loss')
+    ax.set_yscale('log')
+    ax.legend()
+    ax.set_title('Losses over Epochs')
     plt.tight_layout()
     plt.savefig(f"{output_dir}/losses.png", bbox_inches="tight")
     plt.close()

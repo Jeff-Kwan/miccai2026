@@ -1,6 +1,6 @@
 import torch 
-from datahandling.EchoDynaDataset import load_echonet_dynamic_datasets
-from models.MotionLatentAE2 import MotionLatentAE
+from datahandling.PreTrainEchoDynaDataset import load_echodyna_downstream_datasets
+from models.MotionLatentAE3 import MotionLatentAE
 import os
 import random
 import matplotlib.pyplot as plt
@@ -11,7 +11,7 @@ import imageio
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_08/15_50_MLAE"
+load_dir = "results/2026_02_09/12_33_MLAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -22,20 +22,17 @@ model.load_state_dict(torch.load(os.path.join(load_dir, "MLAE.pth"), map_locatio
 model = model.to(device)
 model.eval()
 
-train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(
-    "data/echodyna/FileList.csv",
-    "data/echodyna/Videos",
-    "data/echodyna/VolumeTracings.csv",
-    load_video=True)
+train_ds, val_ds, test_ds = load_echodyna_downstream_datasets(allow_missing_masks=True)
 
 
 idx = random.randint(0, len(val_ds) - 1)
 video = val_ds[idx]['video'].to(device).unsqueeze(0)  # [1, C, T, H, W]
+frames_idx = val_ds[idx]['frame_indices']
 
 # Reconstruction
 _, C, T, H, W = video.shape
 with torch.inference_mode():
-    reconstruction = model(video)
+    reconstruction = model(video)[0]
     z_motion = model.z_motion.cpu().numpy().squeeze()
 
 # Compute effective rank of z_motion
@@ -46,22 +43,22 @@ H = -(p * np.log(p)).sum()
 effective_rank = np.exp(H)
 print(f"Effective rank of z_motion: {effective_rank:.4f}")
 
-# Project z_motion into PC space
-z_motion = z_motion @ Vh.T
+# # Project z_motion into PC space
+# z_motion = z_motion @ Vh.T
 
-# Plot the singular value spectrum up to effective rank
-num_plot = min(max(int(4*effective_rank), 40), len(s))
-plt.figure(figsize=(6, 4))
-plt.plot(s[:num_plot], marker='o')
-plt.title("Singular Value Spectrum of z_motion")
-plt.xlabel("Index")
-plt.ylabel("Singular Value")
-plt.yscale("log")
-plt.axvline(x=effective_rank, color='r', linestyle='--', label=f"Effective rank: {effective_rank:.2f}")
-plt.grid(True, which="both", linestyle=":", alpha=0.6)
-plt.legend()
-plt.savefig(os.path.join(output_dir, f"{idx}-z_singular_values.png"), dpi=300, bbox_inches="tight")
-plt.close()
+# # Plot the singular value spectrum up to effective rank
+# num_plot = min(max(int(4*effective_rank), 40), len(s))
+# plt.figure(figsize=(6, 4))
+# plt.plot(s[:num_plot], marker='o')
+# plt.title("Singular Value Spectrum of z_motion")
+# plt.xlabel("Index")
+# plt.ylabel("Singular Value")
+# plt.yscale("log")
+# plt.axvline(x=effective_rank, color='r', linestyle='--', label=f"Effective rank: {effective_rank:.2f}")
+# plt.grid(True, which="both", linestyle=":", alpha=0.6)
+# plt.legend()
+# plt.savefig(os.path.join(output_dir, f"{idx}-z_singular_values.png"), dpi=300, bbox_inches="tight")
+# plt.close()
 
 # Get FPS from dataset metadata
 fps = val_ds[idx]["metadata"]["FPS"]
@@ -104,7 +101,7 @@ gif_path = os.path.join(output_dir, f"{idx}-reconstruction.gif")
 imageio.mimsave(gif_path, frames, duration=duration)
 
 
-def plot_colormap_trajectory(x, y, title, xlabel, ylabel, save_path,
+def plot_colormap_trajectory(x, y, title, xlabel, ylabel, save_path, frames_idx,
                              cmap="coolwarm"):
     """
     x, y: arrays of shape (T,)
@@ -138,6 +135,8 @@ def plot_colormap_trajectory(x, y, title, xlabel, ylabel, save_path,
     ax_traj.add_collection(lc)
     ax_traj.scatter(x[0], y[0], color="blue", label="t=0", zorder=3)
     ax_traj.scatter(x[-1], y[-1], color="red", label="t=T", zorder=3)
+    for f in frames_idx:
+        ax_traj.scatter(x[f], y[f], color="green", marker="x", s=100, label="ES/ED", zorder=3)
 
     pad_x = (x.max() - x.min()) * 0.05 if x.max() > x.min() else 1.0
     pad_y = (y.max() - y.min()) * 0.05 if y.max() > y.min() else 1.0
@@ -152,12 +151,16 @@ def plot_colormap_trajectory(x, y, title, xlabel, ylabel, save_path,
 
     ax_x = fig.add_subplot(gs[1, 0])
     ax_x.scatter(t, x, color="black", s=1)
+    for f in frames_idx:
+        ax_x.scatter(t[f], x[f], color="green", marker="x", s=100, label="ES/ED", zorder=3)
     ax_x.set_xlabel("Normalized time")
     ax_x.set_ylabel("D1")
     ax_x.grid(True, linestyle=":", alpha=0.6)
 
     ax_y = fig.add_subplot(gs[1, 1])
     ax_y.scatter(t, y, color="black", s=1)
+    for f in frames_idx:
+        ax_y.scatter(t[f], y[f], color="green", marker="x", s=100, label="ES/ED", zorder=3)
     ax_y.set_xlabel("Normalized time")
     ax_y.set_ylabel("D2")
     ax_y.grid(True, linestyle=":", alpha=0.6)
@@ -172,4 +175,5 @@ plot_colormap_trajectory(
     xlabel="D1",
     ylabel="D2",
     save_path=os.path.join(output_dir, f"{idx}-z_motion_trajectory.png"),
-    cmap="coolwarm")
+    cmap="coolwarm",
+    frames_idx=frames_idx)

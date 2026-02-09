@@ -4,31 +4,6 @@ import torch.nn.functional as F
 from .VideoViT import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
 
 
-class SimpleConvDecoder(nn.Module):
-    def __init__(self, latent: int, out_dim: int = 3):
-        super().__init__()
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose3d(latent, 256, (1, 2, 2), (1, 2, 2)),  # 2x2
-            nn.GELU(),
-            nn.ConvTranspose3d(256, 256, (1, 2, 2), (1, 2, 2)),     # 4x4
-            nn.GELU(),
-            nn.ConvTranspose3d(256, 128, (1, 2, 2), (1, 2, 2)),     # 8x8
-            nn.Conv3d(128, 128, (1, 3, 3), 1, (0, 1, 1)),
-            nn.GroupNorm(8, 128),
-            nn.GELU(),
-            nn.ConvTranspose3d(128, 64, (1, 2, 2), (1, 2, 2)),      # 16x16
-            nn.GELU(),
-            nn.ConvTranspose3d(64, 32, (1, 2, 2), (1, 2, 2)),       # 32x32
-            nn.GELU(),
-            nn.ConvTranspose3d(32, 8, (1, 2, 2), (1, 2, 2)),        # 64x64
-            nn.ConvTranspose3d(8, out_dim, (1, 2, 2), (1, 2, 2)),   # 128x128
-        )
-    
-        def forward(self, x: torch.Tensor) -> torch.Tensor:
-            # x is [B, T, latent]
-            x = x.transpose(1, 2).unsqueeze(-1).unsqueeze(-1).contiguous()  # (B, latent, T, 1, 1)
-            return self.decoder(x).transpose(1, 2).contiguous()  # (B, out_dim, T, H, W)
-
 class VideoViTMAE(nn.Module):
     """
     Video MAE wrapper around VideoViTEncoder + VideoViTDecoder.
@@ -211,7 +186,6 @@ class VideoViTMAE(nn.Module):
         }
 
 
-
 # ----------------------------- example -----------------------------
 if __name__ == "__main__":
     enc = VideoViTEncoder(VideoViTCfg(dim=384, depth=8, heads=6, patch=8))
@@ -232,8 +206,9 @@ if __name__ == "__main__":
         record_shapes=True,
         with_flops=True,
     ) as prof:
-        loss = mae(video, return_pred=False)
+        output = mae(video, return_pred=True)["pred"]
 
+    assert output.shape == video.shape, f"Expected output shape {video.shape}, got {output.shape}"
     print(prof.key_averages().table(sort_by=f"self_{device}_memory_usage", row_limit=8))
     print(f"Max VRAM usage: {torch.cuda.max_memory_allocated(device) / 1024**2:.2f} MB") if torch.cuda.is_available() else None
     print("Total trainable parameters:", round(sum(p.numel() for p in mae.parameters() if p.requires_grad)/1e6, 2), 'M')
