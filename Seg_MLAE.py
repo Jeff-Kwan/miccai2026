@@ -163,8 +163,8 @@ def save_examples_echo_dyna(model, val_ds, out_dir, results=5):
     model.eval()
     for i, idx in enumerate(random_indices):
         item = val_ds[idx]
-        frames = item["tracing"]["frames"]
-        masks = item["tracing"]["masks"]
+        frames = item["frame_indices"]
+        masks = item["masks"]
 
         frame = frames[0]
         mask = masks[0]  # (1,H,W) presumably
