@@ -35,7 +35,7 @@ class EchoDynaDataset(Dataset):
                 from torchvision import set_video_backend
                 set_video_backend(video_backend)
             except Exception:
-                pass  # backend selection is best-effort
+                pass  # best-effort
 
     def __len__(self) -> int:
         return len(self.entries)
@@ -83,12 +83,20 @@ def load_echonet_dynamic_datasets(
 
 
 # =========================
-# VolumeTracings loading
+# VolumeTracings loading (FIXED)
 # =========================
 
 TRACING_REQ = {"FileName", "X1", "Y1", "X2", "Y2", "Frame"}
 
 def load_volume_tracings(tracings_csv_path: str) -> Dict[str, Dict[int, List[Tuple[float, float]]]]:
+    """
+    Correct interpretation for EchoNet-Dynamic VolumeTracings.csv:
+    each row describes a boundary *segment* (X1,Y1)->(X2,Y2). The rows are ordered such that
+    taking the sequence of (X1,Y1) gives the polygon vertices around the contour.
+
+    The previous logic that appended both endpoints produces duplicated/zig-zag point lists,
+    which yields incorrect filled masks.
+    """
     tracings: Dict[str, Dict[int, List[Tuple[float, float]]]] = defaultdict(lambda: defaultdict(list))
 
     with open(tracings_csv_path, newline="") as f:
@@ -98,11 +106,10 @@ def load_volume_tracings(tracings_csv_path: str) -> Dict[str, Dict[int, List[Tup
             raise ValueError(f"VolumeTracings.csv missing required columns: {sorted(missing)}")
 
         for row in r:
-            fn = row["FileName"].strip()          # e.g. "...avi"
+            fn = row["FileName"].strip()   # e.g. "XXXX.avi" (basename with ext)
             frame = int(row["Frame"])
             x1, y1 = float(row["X1"]), float(row["Y1"])
-            x2, y2 = float(row["X2"]), float(row["Y2"])
-            tracings[fn][frame].extend([(x1, y1), (x2, y2)])
+            tracings[fn][frame].append((x1, y1))  # FIX: use X1,Y1 only (in order)
 
     return tracings
 
@@ -157,6 +164,7 @@ def resample_resolution(video: torch.Tensor, target=(128, 128), mode="bilinear")
 # =========================
 
 def map_old_frame_to_new_nearest(i_old: int, T_old: int, T_new: int) -> int:
+    # Matches the index sampling from resample_fps(..., mode="nearest") for uniform linspace resampling.
     if T_new <= 0:
         raise ValueError("T_new must be positive")
     if T_old <= 1:
@@ -164,7 +172,19 @@ def map_old_frame_to_new_nearest(i_old: int, T_old: int, T_new: int) -> int:
     j = int(round(i_old * (T_new - 1) / (T_old - 1)))
     return max(0, min(T_new - 1, j))
 
+def _clip_int_xy(x: float, y: float, W: int, H: int) -> Tuple[int, int]:
+    xi = int(round(x))
+    yi = int(round(y))
+    if xi < 0: xi = 0
+    if yi < 0: yi = 0
+    if xi > W - 1: xi = W - 1
+    if yi > H - 1: yi = H - 1
+    return xi, yi
+
 def rasterize_polygon_pil(points_xy, out_hw):
+    """
+    Filled polygon mask (LV segmentation): returns uint8 mask in {0,1} of shape [H,W].
+    """
     H, W = out_hw
     img = Image.new("L", (W, H), 0)
     if len(points_xy) >= 3:
@@ -179,32 +199,51 @@ def build_lv_masks_for_video(
     tracings_for_file: Dict[int, List[Tuple[float, float]]],
     T_old: int,
     T_new: int,
-    tracing_coord_hw: Tuple[int, int] = (112, 112),
-    dst_hw: Tuple[int, int] = (128, 128),
+    tracings_coord_hw: Tuple[int, int],
+    dst_hw: Tuple[int, int],
 ) -> Optional[Dict[str, torch.Tensor]]:
+    """
+    Builds per-frame LV filled masks for frames that have tracings.
+    - tracings_for_file maps old frame index -> list of polygon vertices in tracings_coord_hw coordinates.
+    - Frames are mapped into the resampled video using nearest-index alignment.
+
+    Returns:
+      {"frame_indices": LongTensor [N], "masks": UInt8Tensor [N,H,W]}
+    """
     if not tracings_for_file:
         return None
 
-    src_h, src_w = tracing_coord_hw
+    src_h, src_w = tracings_coord_hw
     dst_h, dst_w = dst_hw
+    if src_h <= 0 or src_w <= 0:
+        raise ValueError(f"Bad tracings_coord_hw={tracings_coord_hw}")
     sx, sy = dst_w / float(src_w), dst_h / float(src_h)
 
-    frame_idx, masks = [], []
+    # If multiple tracings map to the same new frame (can happen after resampling),
+    # keep the *last* one (typically fine).
+    keep: Dict[int, torch.Tensor] = {}
+
     for i_old in sorted(tracings_for_file):
         pts = tracings_for_file[i_old]
         if len(pts) < 3:
             continue
-        i_new = map_old_frame_to_new_nearest(i_old, T_old=T_old, T_new=T_new)
-        pts_scaled = [(x * sx, y * sy) for (x, y) in pts]
-        masks.append(rasterize_polygon_pil(pts_scaled, (dst_h, dst_w)))
-        frame_idx.append(i_new)
 
-    if not masks:
+        i_new = map_old_frame_to_new_nearest(i_old, T_old=T_old, T_new=T_new)
+
+        # Scale, round, and clip to valid pixel coordinates (PIL tolerates floats, but clipping helps).
+        pts_scaled = [_clip_int_xy(x * sx, y * sy, dst_w, dst_h) for (x, y) in pts]
+
+        keep[i_new] = rasterize_polygon_pil(pts_scaled, (dst_h, dst_w))
+
+    if not keep:
         return None
+
+    frame_idx = sorted(keep.keys())
+    masks = torch.stack([keep[i] for i in frame_idx], 0).to(torch.uint8)  # [N,H,W]
 
     return {
         "frame_indices": torch.tensor(frame_idx, dtype=torch.long),
-        "masks": torch.stack(masks, 0).to(torch.uint8),  # [N,H,W]
+        "masks": masks,
     }
 
 
@@ -257,7 +296,7 @@ def save_preprocessed_split(
     resize_mode: str = "bilinear",
     save_ext: str = ".pt",
     tracings: Optional[Dict[str, Dict[int, List[Tuple[float, float]]]]] = None,
-    tracings_coord_hw: Tuple[int, int] = (112, 112),
+    tracings_coord_hw: Optional[Tuple[int, int]] = None,
     masks_out_root: Optional[str] = None,
     save_masks: bool = True,
 ):
@@ -274,7 +313,6 @@ def save_preprocessed_split(
     n_m_ok = n_m_skip = n_m_fail = 0
 
     for video, meta, filename in tqdm(dl, desc=f"Preprocessing {split}", unit="video"):
-        # IMPORTANT: collate_fn already returns unbatched [T,C,H,W]; do NOT squeeze(0).
         meta = dict(meta)
 
         base = os.path.splitext(os.path.basename(filename))[0]
@@ -314,6 +352,9 @@ def save_preprocessed_split(
             print(f"\n[{split}] FAILED (video): {filename}\n  -> {e}")
             continue
 
+        # =========================
+        # Masks (LV filled polygons)
+        # =========================
         if not (save_masks and tracings is not None):
             continue
 
@@ -333,7 +374,7 @@ def save_preprocessed_split(
 
             T_old = int(video.shape[0])
 
-            # Get T_new/h/w from in-memory processed video if available; else load from disk.
+            # Determine destination H,W from preprocessed video.
             if processed_v is not None:
                 T_new, h, w = int(processed_v.shape[1]), int(processed_v.shape[2]), int(processed_v.shape[3])
             else:
@@ -344,7 +385,7 @@ def save_preprocessed_split(
                 tracings_for_file=tracings[tracing_key],
                 T_old=T_old,
                 T_new=T_new,
-                tracing_coord_hw=tracings_coord_hw,
+                tracings_coord_hw=tracings_coord_hw,
                 dst_hw=(h, w),
             )
             if masks_pack is None:
@@ -353,11 +394,11 @@ def save_preprocessed_split(
 
             masks_payload = {
                 "frame_indices": masks_pack["frame_indices"],  # [N]
-                "masks": masks_pack["masks"],                  # [N,h,w] uint8
+                "masks": masks_pack["masks"],                  # [N,h,w] uint8 {0,1}
                 "source_video_pt": out_path,
                 "source_tracing_file": tracing_key,
                 "dst_hw": (h, w),
-                "tracing_coord_hw": tracings_coord_hw,
+                "tracings_coord_hw": tracings_coord_hw,
             }
 
             tmpm = mask_out_path + ".tmp"
@@ -394,6 +435,7 @@ if __name__ == "__main__":
         save_preprocessed_split(
             dl, name,
             out_root=out_root, dst_fps=24.0, size=(128, 128),
-            tracings=tracings, tracings_coord_hw=(112, 112),
+            tracings=tracings,
+            tracings_coord_hw=(112, 112),
             masks_out_root=masks_root, save_masks=True,
         )

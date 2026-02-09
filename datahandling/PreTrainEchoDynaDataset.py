@@ -223,7 +223,7 @@ class EchoDynaDownstreamDataset(Dataset):
 
 
 # Example usage
-def load_echodyna_downstream_datasets(allow_missing_masks: bool = True):
+def load_echodyna_downstream_datasets(allow_missing_masks: bool = False):
     pre_root = "data/echodyna/preprocessed"
     masks_root = "data/echodyna/preprocessed_masks"
 
