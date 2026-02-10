@@ -15,8 +15,8 @@ output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
 max_frames = 32
-epochs = 20
-batch_size = 32
+epochs = 100
+batch_size = 16
 enc = VideoViTEncoder(VideoViTCfg(dim=384, depth=8, heads=6, patch=8))
 dec = VideoViTDecoder(enc_dim=384, patch=8, in_chans=3, cfg=VideoViTDecCfg(dec_dim=256, dec_depth=2, dec_heads=8))
 frame_dec = SimpleConvDecoder(latent=384, out_dim=3, base=256)
@@ -32,13 +32,10 @@ class EDESMLPProbe(nn.Module):
     def __init__(self, latent_dim, mae, selection=2):
         super().__init__()
         self.encoder = mae.encoder
-        self.selection = nn.Linear(latent_dim, selection)
-        self.fc = nn.Sequential(
-            nn.Linear(latent_dim*selection, latent_dim),
-            nn.GELU(),
-            nn.LayerNorm(latent_dim),
-            nn.Linear(latent_dim, 1))
-        self.fc[-1].bias.data.fill_(0.556)
+        self.query = nn.Parameter(torch.randn(1, 1, latent_dim))
+        self.attn_pool = nn.MultiheadAttention(embed_dim=latent_dim, num_heads=6, batch_first=True)
+        self.fc = nn.Linear(latent_dim, 1)
+        self.fc.bias.data.fill_(0.556)
 
     def forward(self, video):
         with torch.no_grad():
@@ -46,14 +43,13 @@ class EDESMLPProbe(nn.Module):
             tokens = torch.cat([gcls.unsqueeze(1), frames[:, :, 0, :]], dim=1)
             
         # Soft selection
-        w = F.softmax(self.selection(tokens), dim=1)
-        features = w.transpose(1, 2) @ tokens
-        features = features.reshape(features.size(0), -1)
+        features = self.attn_pool(self.query.expand(video.size(0), -1, -1), tokens, tokens)[0].squeeze(1)  # [B, D]
         pred = self.fc(features)
         return pred.squeeze(-1)
 
 probe = EDESMLPProbe(latent_dim=384, mae=mae).to(device)
 optimizer = torch.optim.AdamW(probe.parameters(), lr=3e-4, weight_decay=1e-3)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 mse = nn.MSELoss()
 l1 = nn.L1Loss()
 
@@ -102,6 +98,7 @@ for epoch in range(epochs):
         train_loss += loss.item() * videos.size(0)
         p_bar.set_postfix({"Loss": loss.item(), "GradNorm": norm.item()})
 
+    scheduler.step()
     train_loss /= len(train_dl.dataset)
 
     probe.eval()

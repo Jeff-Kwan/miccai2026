@@ -31,7 +31,7 @@ autocast = False
 
 enc = VideoViTEncoder(VideoViTCfg(dim=384, depth=8, heads=6, patch=8))
 dec = VideoViTDecoder(enc_dim=384, patch=8, in_chans=3, cfg=VideoViTDecCfg(dec_dim=256, dec_depth=2, dec_heads=8))
-mae = VideoViTMAE(enc, dec, norm_pix_loss=True, mask_ratio=0.75)
+mae = VideoViTMAE(enc, dec, norm_pix_loss=False, mask_ratio=0.75)
 mae = mae.to(device)
 # mae = torch.compile(mae)
 print(f"Initialized VMAE with {sum(p.numel() for p in mae.parameters() if p.requires_grad)/1e6:.2f}M trainable parameters.")
@@ -379,7 +379,7 @@ for epoch in range(epochs):
         optimizer.zero_grad()
 
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=autocast):
-            loss = mae(aug_videos, return_pred=False)["loss"]
+            loss = mae(aug_videos, target=videos, return_pred=False)["loss"]
 
         loss.backward()
         norm = nn.utils.clip_grad_norm_(mae.parameters(), max_norm=1.0)

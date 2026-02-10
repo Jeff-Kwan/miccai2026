@@ -396,6 +396,7 @@ class VideoViTDecoder(nn.Module):
         enc_tokens: torch.Tensor,          # (B, T, 1+Nvis, Denc)
         keep_idx: torch.Tensor,            # (B, T, Nvis)
         hw: Tuple[int, int],
+        mask_token: Optional[torch.Tensor] = None,  # overrides self.mask_token if not None
     ) -> torch.Tensor:
         B, T, Lvis, Denc = enc_tokens.shape
         h, w = hw
@@ -418,7 +419,10 @@ class VideoViTDecoder(nn.Module):
         Ddec = vis.size(-1)
 
         # IMPORTANT for autocast: cast fp32 params to activation dtype before use
-        mask_tok = self.mask_token.to(dtype=work_dtype, device=work_dev)
+        if mask_token is not None:
+            mask_tok = mask_token.to(dtype=work_dtype, device=work_dev)
+        else:
+            mask_tok = self.mask_token.to(dtype=work_dtype, device=work_dev)    
         g = self.gcls.to(dtype=work_dtype, device=work_dev).expand(B, 1, -1)
 
         # scatter visible into full grid of mask tokens

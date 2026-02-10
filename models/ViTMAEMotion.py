@@ -163,24 +163,12 @@ class VideoMotionMAE(nn.Module):
             return F.l1_loss(pred, target, reduction="mean")
         return F.smooth_l1_loss(pred, target, reduction="mean")
 
-    # ------------------------------ frame pathway helpers ------------------------------
-
-    def _resize_video(self, video: torch.Tensor, size: tuple[int, int]) -> torch.Tensor:
-        """
-        video: (B,T,C,H,W) -> (B,T,C,size[0],size[1]) using bilinear
-        """
-        B, T, C, H, W = video.shape
-        if (H, W) == size:
-            return video
-        x = video.view(B * T, C, H, W)
-        x = F.interpolate(x, size=size, mode="bilinear", align_corners=False)
-        return x.view(B, T, C, size[0], size[1])
-
     # ----------------------------------- forward -----------------------------------
 
     def forward(
         self,
         video: torch.Tensor,                      # (B,T,C,H,W)
+        target: torch.Tensor | None = None,       # (B,T,C,H,W) optional target for frame loss (defaults to input video)
         *,
         keep_idx: torch.Tensor | None = None,     # (B,T,Nvis)
         mask_ratio: float | None = None,          # overrides self.mask_ratio if keep_idx is None
@@ -202,7 +190,11 @@ class VideoMotionMAE(nn.Module):
             raise ValueError(f"video C={C} must match decoder in_chans={self.in_chans}")
 
         # --- targets for MAE patch loss ---
-        target_full, hw = self._patchify(video, self.patch)  # (B,T,N,patch_dim)
+        if target is None:
+            target_full, hw = self._patchify(video, self.patch)  # (B,T,N,patch_dim)
+        else:
+            target_full, hw = self._patchify(target, self.patch)  # (B,T,N,patch_dim)
+            
         h, w = hw
         N = target_full.size(2)
         patch_dim = target_full.size(3)
