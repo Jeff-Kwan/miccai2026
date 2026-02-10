@@ -420,17 +420,16 @@ class VideoViTDecoder(nn.Module):
 
         # IMPORTANT for autocast: cast fp32 params to activation dtype before use
         if mask_token is not None:
-            mask_tok = mask_token.to(dtype=work_dtype, device=work_dev)
+            full = mask_token.to(dtype=work_dtype, device=work_dev).clone()
         else:
-            mask_tok = self.mask_token.to(dtype=work_dtype, device=work_dev)    
+            mask_tok = self.mask_token.to(dtype=work_dtype, device=work_dev)
+            full = mask_tok.expand(B * T, N, Ddec).clone()  # now already correct dtype/device    
         g = self.gcls.to(dtype=work_dtype, device=work_dev).expand(B, 1, -1)
 
         # scatter visible into full grid of mask tokens
-        full = mask_tok.expand(B * T, N, Ddec).clone()  # now already correct dtype/device
         vis_bt = vis.reshape(B * T, Nvis, Ddec)
         keep_bt = keep_idx.reshape(B * T, Nvis)
         full.scatter_(1, keep_bt.unsqueeze(-1).expand(-1, -1, Ddec), vis_bt)
-
         patch_pos = torch.arange(N, device=work_dev).view(1, 1, N).expand(B, T, N)
         frames = torch.cat((fcls, full.view(B, T, N, Ddec)), dim=2)  # (B, T, 1+N, Ddec)
 

@@ -418,6 +418,7 @@ for epoch in range(epochs):
         train_loss += loss.item() * videos.size(0)
         p_bar.set_postfix({'Recon': loss.item(), 'Grad Norm': norm.item()})
         
+        
     train_loss /= len(train_dl.dataset)
     train_losses.append(train_loss)
     
@@ -431,6 +432,7 @@ for epoch in range(epochs):
                 loss = mae(videos, target=videos, return_pred=False)["loss"]
             val_loss += loss.item() * videos.size(0)
             p_bar.set_postfix({'Recon': loss.item()})
+            
             
     val_loss /= len(val_dl.dataset)
     val_losses.append(val_loss)    
