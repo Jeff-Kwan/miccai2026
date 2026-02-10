@@ -24,13 +24,8 @@ batch_size = 32
 learning_rate = 3e-4
 weight_decay = 1e-2
 max_frames = 32
-LAMBDAlat = 1.0
-# warmup = 0; ramp = 20; lambda_range = (1e-4, 2e-2)
-LAMBDAz = 1.0
-#[0] * warmup + \
-    # [lambda_range[0] + (lambda_range[1] - lambda_range[0]) * (i - warmup) / (ramp - 1) for i in range(warmup, warmup + ramp)] + \
-    # [lambda_range[1]] * (epochs - warmup - ramp)
-# assert len(LAMBDAz) == epochs, "LAMBDAz schedule length must match number of epochs"
+LAMBDAlat = 1e-2    # M rank
+LAMBDAz = 10.0      # Z deviation
 
 # torch.backends.cudnn.enabled = True
 # torch.backends.cudnn.benchmark = True
@@ -479,7 +474,11 @@ for epoch in range(epochs):
         optimizer.step()
     
         train_loss += mse_loss.item() * videos.size(0)
-        p_bar.set_postfix({'Recon': mse_loss.item(), 'Effrank': model.effective_rank.item(), 'Grad Norm': norm.item()})
+        p_bar.set_postfix({'Recon': mse_loss.item(), 
+                           'Zrank': model.effective_rank.item(), 
+                           'Mrank': model.latent_reg.exp().item(),
+                           'ZDev': model.z_reg.item(),
+                           'Grad Norm': norm.item()})
         
     train_loss /= len(train_dl.dataset)
     train_losses.append(train_loss)
