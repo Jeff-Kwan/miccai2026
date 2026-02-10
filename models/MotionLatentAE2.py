@@ -116,12 +116,11 @@ class MotionLatentAE(nn.Module):
 
         self.down = nn.Conv3d(latent, latent*2, (1, 2, 2), (1, 2, 2), 0)
         self.up = nn.ConvTranspose3d(latent*2, latent, (1, 2, 2), (1, 2, 2), 0)
-        self.motion_basis = nn.Parameter(torch.randn(latent*2, latent*2))
+        self.motion_basis = nn.Parameter(torch.randn(latent*2, latent*2) * 0.01)
 
     def svdvals_fp32(self, A):
         return torch.linalg.svdvals(A.float()).to(A.dtype)
 
-    @torch.no_grad()
     def batch_effective_rank(self, z, eps: float = 1e-12):
         s = self.svdvals_fp32(z)
         e = s.square()
@@ -130,8 +129,8 @@ class MotionLatentAE(nn.Module):
         H = -(p * p_safe.log()).sum(dim=-1)
         return H.exp()
 
-
-    def spectral_entropy_penalty(self, s: torch.Tensor, eps: float = 1e-12):
+    def spectral_entropy_penalty(self, M: torch.Tensor, eps: float = 1e-12):
+        s = self.svdvals_fp32(M)
         w = s.square()
         p = w / (w.sum(dim=-1, keepdim=True) + eps)
         p_safe = p.clamp_min(eps)
@@ -139,13 +138,6 @@ class MotionLatentAE(nn.Module):
         return H.mean()
 
 
-    def schatten_p_mean_power(self, s: torch.Tensor, p: float = 1.0):
-            return (s.pow(p).mean(dim=-1)).mean()
-
-    def random_permute_dim(self, x: torch.Tensor, dim: int):
-        perm = torch.randperm(x.size(dim), device=x.device)
-        return x.index_select(dim, perm)
-        
     def forward(self, x):
         z, skips = self.encoder(x)
 
@@ -157,10 +149,12 @@ class MotionLatentAE(nn.Module):
         with torch.no_grad():
             self.effective_rank = self.batch_effective_rank(z_motion.squeeze()).mean()
 
-        X, _ = torch.linalg.qr(self.motion_basis)
+        X = self.motion_basis / self.motion_basis.norm(p='fro')
+        self.latent_reg = self.spectral_entropy_penalty(x)
+        
         z_motion = z_motion @ X
-        self.z_motion = z_motion.detach()
-        self.z_reg = torch.sqrt((z_motion * z_motion).sum(dim=[0,1])).mean()
+        self.z_motion = z_motion
+        self.z_reg = (z - (z_motion@X.T).transpose(1, 2).view_as(z)).abs().mean()
 
         z = self.up(z)
 

@@ -24,9 +24,13 @@ batch_size = 32
 learning_rate = 3e-4
 weight_decay = 1e-2
 max_frames = 32
-# LAMBDAlat = 10.0
-LAMBDAz = 1e-3
-warmup = 3
+LAMBDAlat = 1.0
+# warmup = 0; ramp = 20; lambda_range = (1e-4, 2e-2)
+LAMBDAz = 1.0
+#[0] * warmup + \
+    # [lambda_range[0] + (lambda_range[1] - lambda_range[0]) * (i - warmup) / (ramp - 1) for i in range(warmup, warmup + ramp)] + \
+    # [lambda_range[1]] * (epochs - warmup - ramp)
+# assert len(LAMBDAz) == epochs, "LAMBDAz schedule length must match number of epochs"
 
 # torch.backends.cudnn.enabled = True
 # torch.backends.cudnn.benchmark = True
@@ -264,28 +268,29 @@ class RandomVideoErasing(nn.Module):
 
         return out
 
-augmentations = v2.Compose([
-    v2.RandomApply([# Intensities
-        v2.RandomChoice([
-            v2.RandomChoice([# Intensity distribution
-                ClipBrightnessContrast(brightness=0.3, contrast=0.2),
-                RandomGamma(gamma=(0.7, 1.5))]),
-            v2.RandomChoice([# Sharpness / Blur
-                v2.RandomAdjustSharpness(sharpness_factor=0.5, p=1),
-                v2.GaussianBlur(kernel_size=7, sigma=(0.25, 1.5))]),
-            v2.RandomChoice([# Noise
-                v2.GaussianNoise(0, 0.05),
-                SpeckleNoise(std=(0.02, 0.1))])
-        ])
-    ], p=0.5),
-    v2.RandomApply([# Masking
-        v2.RandomChoice([
-            FrameDropout(p=0.25),
-            RandomVideoErasing(p=1.0,
-            scale=(0.1, 0.25), ratio=(0.25, 4.0), t_scale=(1.0, 1.0), 
-            value=0.0, num_cuboids_range=(1, 3))])
-    ], p=0.0)
-])
+augmentations = v2.Identity()
+# augmentations = v2.Compose([
+#     v2.RandomApply([# Intensities
+#         v2.RandomChoice([
+#             v2.RandomChoice([# Intensity distribution
+#                 ClipBrightnessContrast(brightness=0.3, contrast=0.2),
+#                 RandomGamma(gamma=(0.7, 1.5))]),
+#             v2.RandomChoice([# Sharpness / Blur
+#                 v2.RandomAdjustSharpness(sharpness_factor=0.5, p=1),
+#                 v2.GaussianBlur(kernel_size=7, sigma=(0.25, 1.5))]),
+#             v2.RandomChoice([# Noise
+#                 v2.GaussianNoise(0, 0.05),
+#                 SpeckleNoise(std=(0.02, 0.1))])
+#         ])
+#     ], p=0.5),
+#     v2.RandomApply([# Masking
+#         v2.RandomChoice([
+#             FrameDropout(p=0.25),
+#             RandomVideoErasing(p=1.0,
+#             scale=(0.1, 0.25), ratio=(0.25, 4.0), t_scale=(1.0, 1.0), 
+#             value=0.0, num_cuboids_range=(1, 3))])
+#     ], p=0.0)
+# ])
 
 # fps_jitter = FPSJitter(k=(0.1, 0.75), min_keep=8, p=0.2)
 fps_jitter = v2.Identity()
@@ -467,7 +472,7 @@ for epoch in range(epochs):
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=autocast):
             x_rec = model(aug_videos)  # [B, C, T, H, W]
             mse_loss = criterion(x_rec, videos)
-            loss = mse_loss + (LAMBDAz * model.z_reg) * float(epoch>=warmup)
+            loss = mse_loss + LAMBDAz * model.z_reg + LAMBDAlat * model.latent_reg
 
         loss.backward()
         norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
