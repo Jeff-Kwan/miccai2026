@@ -209,11 +209,12 @@ class VideoMotionMAE(nn.Module):
 
         # --- keep_idx (same logic as old wrapper) ---
         if keep_idx is None:
-            r = self.mask_ratio if mask_ratio is None else float(mask_ratio)
-            if not (0.0 < r < 1.0):
-                raise ValueError(f"mask_ratio must be in (0,1), got {r}")
-            Nvis = max(1, int(round(N * (1.0 - r))))
-            keep_idx = self._random_keep_idx(B, T, N, Nvis, video.device)
+            if self.training:
+                r = self.mask_ratio if mask_ratio is None else float(mask_ratio)
+                if not (0.0 < r < 1.0):
+                    raise ValueError(f"mask_ratio must be in (0,1), got {r}")
+                Nvis = max(1, int(round(N * (1.0 - r))))
+                keep_idx = self._random_keep_idx(B, T, N, Nvis, video.device)
         else:
             if keep_idx.dim() != 3 or keep_idx.size(0) != B or keep_idx.size(1) != T:
                 raise ValueError(f"keep_idx must be (B,T,Nvis)=({B},{T},*), got {tuple(keep_idx.shape)}")

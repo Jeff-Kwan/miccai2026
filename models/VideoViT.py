@@ -287,13 +287,21 @@ class VideoViTEncoder(nn.Module):
     def forward(
         self,
         x: torch.Tensor,                 # (B, T, C, H, W)
-        keep_idx: torch.Tensor,          # (B, T, Nvis)
+        keep_idx: torch.Tensor | None = None,          # (B, T, Nvis)
     ) -> tuple[torch.Tensor, torch.Tensor, tuple[int, int]]:
         B, T, C, H, W = x.shape
         x_bt = x.reshape(B * T, C, H, W)
 
         p, hw = self.patch(x_bt)         # (B*T, N, D)
         N, D = p.shape[1], p.shape[2]
+
+        if keep_idx is None:
+            if self.training:
+                raise ValueError(
+                    "keep_idx is required during training (MAE-style masking). "
+                    "Pass keep_idx from your masking sampler.")
+            else:
+                keep_idx = torch.arange(N, device=x.device, dtype=torch.long)[None, None, :].expand(B, T, N)
 
         keep_idx = self._check_keep_idx(keep_idx, B, T, N)
         Nvis = keep_idx.size(2)

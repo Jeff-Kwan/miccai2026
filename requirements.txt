@@ -6,3 +6,5 @@ torchvision
 av
 tqdm
 imageio
+scipy
+scikit-learn
