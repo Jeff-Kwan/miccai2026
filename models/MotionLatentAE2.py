@@ -149,12 +149,12 @@ class MotionLatentAE(nn.Module):
         with torch.no_grad():
             self.effective_rank = self.batch_effective_rank(z_motion.squeeze()).mean()
 
-        X = self.motion_basis / self.motion_basis.norm(p='fro')
-        self.latent_reg = self.spectral_entropy_penalty(x)
+        M = self.motion_basis / self.motion_basis.norm(p='fro')
+        self.latent_reg = self.spectral_entropy_penalty(M)
         
-        z_motion = z_motion @ X
+        z_motion = z_motion @ M
         self.z_motion = z_motion
-        self.z_reg = (z - (z_motion@X.T).transpose(1, 2).view_as(z)).abs().mean()
+        self.z_reg = (z - (z_motion@M.T).transpose(1, 2).view_as(z)).abs().mean()
 
         z = self.up(z)
 
