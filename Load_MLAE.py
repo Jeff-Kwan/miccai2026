@@ -1,6 +1,6 @@
 import torch 
 from datahandling.PreTrainEchoDynaDataset import load_echodyna_downstream_datasets
-from models.MotionLatentAE3 import MotionLatentAE
+from models.MotionLatentAE2 import MotionLatentAE
 import os
 import random
 import matplotlib.pyplot as plt
@@ -11,7 +11,7 @@ import imageio
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_09/12_33_MLAE"
+load_dir = "results/2026_02_10/08_22_MLAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -43,8 +43,8 @@ H = -(p * np.log(p)).sum()
 effective_rank = np.exp(H)
 print(f"Effective rank of z_motion: {effective_rank:.4f}")
 
-# # Project z_motion into PC space
-# z_motion = z_motion @ Vh.T
+# Project z_motion into PC space
+z_motion = z_motion @ Vh.T
 
 # # Plot the singular value spectrum up to effective rank
 # num_plot = min(max(int(4*effective_rank), 40), len(s))

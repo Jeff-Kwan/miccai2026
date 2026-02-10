@@ -24,9 +24,9 @@ batch_size = 32
 learning_rate = 3e-4
 weight_decay = 1e-2
 max_frames = 32
-LAMBDAlat = 1.0
-LAMBDAz = 1.0
-warmup = 1
+# LAMBDAlat = 10.0
+LAMBDAz = 1e-3
+warmup = 3
 
 # torch.backends.cudnn.enabled = True
 # torch.backends.cudnn.benchmark = True
@@ -434,8 +434,8 @@ def collate_fn(batch):
 
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, 
                       collate_fn=collate_fn,
-                      num_workers=16, persistent_workers=True)
-val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=16,
+                      num_workers=80, pin_memory=True, persistent_workers=True)
+val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=32,
                     collate_fn=collate_fn)
 
 
@@ -467,14 +467,14 @@ for epoch in range(epochs):
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=autocast):
             x_rec = model(aug_videos)  # [B, C, T, H, W]
             mse_loss = criterion(x_rec, videos)
-            loss = mse_loss + (LAMBDAlat * model.latent_reg + LAMBDAz * model.z_reg) * float(epoch>=warmup)
+            loss = mse_loss + (LAMBDAz * model.z_reg) * float(epoch>=warmup)
 
         loss.backward()
         norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
     
         train_loss += mse_loss.item() * videos.size(0)
-        p_bar.set_postfix({'Recon': mse_loss.item(), 'Xrank': model.effective_rank.item(), 'Grad Norm': norm.item()})
+        p_bar.set_postfix({'Recon': mse_loss.item(), 'Effrank': model.effective_rank.item(), 'Grad Norm': norm.item()})
         
     train_loss /= len(train_dl.dataset)
     train_losses.append(train_loss)

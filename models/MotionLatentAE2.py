@@ -54,7 +54,7 @@ class ConvEncoder(nn.Module):
         self.downs = nn.ModuleDict(downs)
 
         self.bottleneck = nn.Sequential(
-            *[SpatioConvBlock(latent) for _ in range(layers)] +\
+            *[SpatioTemporalConvBlock(latent) for _ in range(layers)] +\
               [nn.GroupNorm(1, latent)])
 
     def forward(self, x):
@@ -152,14 +152,15 @@ class MotionLatentAE(nn.Module):
         z = self.down(z)
         
         z_centroid = z.mean(dim=2, keepdim=True)
-        X, _ = torch.linalg.qr(self.motion_basis)
-        z_motion = (z - z_centroid).view(z.size(0), z.size(1), z.size(2)).transpose(1, 2) @ X
-        self.z_motion = z_motion
-        self.latent_reg = self.spectral_entropy_penalty(self.motion_basis)
-        z_proj = z_centroid + (z_motion @ X.T).transpose(1, 2).view_as(z)
-        self.z_reg = (z - z_proj).pow(2).sum(dim=1).mean()
+        z_motion = (z - z_centroid).view(z.size(0), z.size(1), z.size(2)).transpose(1, 2)
+
         with torch.no_grad():
-            self.effective_rank = self.batch_effective_rank((z - z_centroid).squeeze()).mean()
+            self.effective_rank = self.batch_effective_rank(z_motion.squeeze()).mean()
+
+        X, _ = torch.linalg.qr(self.motion_basis)
+        z_motion = z_motion @ X
+        self.z_motion = z_motion.detach()
+        self.z_reg = torch.sqrt((z_motion * z_motion).sum(dim=[0,1])).mean()
 
         z = self.up(z)
 
