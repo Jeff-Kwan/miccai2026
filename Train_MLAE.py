@@ -24,8 +24,9 @@ batch_size = 32
 learning_rate = 3e-4
 weight_decay = 1e-2
 max_frames = 32
-LAMBDAlat = 1e-2    # M rank
-LAMBDAz = 10.0      # Z deviation
+LAMBDAlat = 0.1    # M rank
+LAMBDAz = 0.1      # Z deviation
+slow_factor = 0.1  # for motion_basis updates
 
 # torch.backends.cudnn.enabled = True
 # torch.backends.cudnn.benchmark = True
@@ -441,7 +442,10 @@ val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=32,
 
 # Training 
 criterion = nn.MSELoss()
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+optimizer = torch.optim.AdamW([
+    {'params': model.motion_basis, 'lr': learning_rate * slow_factor, 'weight_decay': weight_decay * slow_factor},
+    {'params': [p for n, p in model.named_parameters() if 'motion_basis' not in n], 'lr': learning_rate, 'weight_decay': weight_decay * 0.1}
+])
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
 train_losses = []; val_losses = []; e_ranks = []
