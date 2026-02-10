@@ -20,9 +20,9 @@ output_dir = f"results/{date}/{timestamp}_VMAE"
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 300
+epochs = 250
 batch_size = 16
-learning_rate = 2e-4
+learning_rate = 3e-4
 weight_decay = 1e-2
 max_frames = 32
 
