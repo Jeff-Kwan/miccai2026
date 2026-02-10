@@ -6,7 +6,7 @@ from torchvision.transforms import v2
 from tqdm import tqdm
 
 from datahandling.PreTrainEchoDynaDataset import load_echonet_dynamic_datasets
-from models.MotionLatentAE3 import MotionLatentAE
+from models.MotionLatentAE2 import MotionLatentAE
 import os
 import random
 import matplotlib.pyplot as plt
@@ -24,7 +24,8 @@ batch_size = 32
 learning_rate = 3e-4
 weight_decay = 1e-2
 max_frames = 32
-# LAMBDAlat = 0.1
+LAMBDAlat = 1.0
+LAMBDAz = 1.0
 warmup = 1
 
 # torch.backends.cudnn.enabled = True
@@ -308,7 +309,7 @@ def plot_recons(model, val_ds, output_dir):
     model.eval()
     with torch.no_grad():
         batch_device = batch.to(device)
-        recon_batch = model(batch_device)[0]
+        recon_batch = model(batch_device)
         recon_batch = recon_batch.cpu()
     batch = batch.cpu()
 
@@ -355,7 +356,7 @@ def plot_recons(model, val_ds, output_dir):
     clip_batch = clip.unsqueeze(0).to(device)  # [1, C, 16, H, W]
     model.eval()
     with torch.no_grad():
-        recon_clip_batch = model(clip_batch)[0]
+        recon_clip_batch = model(clip_batch)
         recon_clip_batch = recon_clip_batch.cpu()  # [1, C, 16, H, W]
     clip = clip.cpu()
     recon_clip = recon_clip_batch[0]  # [C, 16, H, W]
@@ -433,8 +434,8 @@ def collate_fn(batch):
 
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, 
                       collate_fn=collate_fn,
-                      num_workers=16, pin_memory=True, persistent_workers=True)
-val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=16, pin_memory=True,
+                      num_workers=16, persistent_workers=True)
+val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=16,
                     collate_fn=collate_fn)
 
 
@@ -443,10 +444,10 @@ criterion = nn.MSELoss()
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
-train_losses = []; val_losses = []; pred_losses = []
+train_losses = []; val_losses = []; e_ranks = []
 for epoch in range(epochs):
     model.train()
-    train_loss = 0.0; pred_loss = 0.0
+    train_loss = 0.0
     p_bar = tqdm(train_dl, desc=f"Epoch {epoch+1}/{epochs}")
     for batch in p_bar:
         videos = batch['video'].to(device, non_blocking=True)  # [B, C, T, H, W]
@@ -464,44 +465,42 @@ for epoch in range(epochs):
         #     aug_videos = F.pad(aug_videos, pad, mode='constant', value=0)
 
         with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=autocast):
-            x_rec, x_pred = model(aug_videos)  # [B, C, T, H, W]
+            x_rec = model(aug_videos)  # [B, C, T, H, W]
             mse_loss = criterion(x_rec, videos)
-            pmse_loss = criterion(x_pred, videos[:, :, 1:, :, :])  # predict next frame, so compare to t=1..T-1
-            loss = mse_loss + pmse_loss
+            loss = mse_loss + (LAMBDAlat * model.latent_reg + LAMBDAz * model.z_reg) * float(epoch>=warmup)
 
         loss.backward()
         norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
     
         train_loss += mse_loss.item() * videos.size(0)
-        p_bar.set_postfix({'Recon': mse_loss.item(), 'Pred': pmse_loss.item(), 'Grad Norm': norm.item()})
+        p_bar.set_postfix({'Recon': mse_loss.item(), 'Xrank': model.effective_rank.item(), 'Grad Norm': norm.item()})
         
     train_loss /= len(train_dl.dataset)
     train_losses.append(train_loss)
     
     model.eval()
-    val_loss = 0.0
+    val_loss = 0.0; e_rank = 0.0
     with torch.no_grad():
         p_bar = tqdm(val_dl, desc=f"Validation Epoch {epoch+1}/{epochs}")
         for batch in p_bar:
             videos = batch['video'].to(device, non_blocking=True)
             with torch.autocast(device_type='cuda', dtype=torch.bfloat16, enabled=autocast):
-                x_rec, x_pred = model(videos)
+                x_rec = model(videos)
                 mse_loss = criterion(x_rec, videos)
-                pmse_loss = criterion(x_pred, videos[:, :, 1:, :, :])
             val_loss += mse_loss.item() * videos.size(0)
-            pred_loss += pmse_loss.item() * videos.size(0)
-            p_bar.set_postfix({'Recon': mse_loss.item()})
+            e_rank += model.effective_rank.item() * videos.size(0)
+            p_bar.set_postfix({'Recon': mse_loss.item(), 'EffRank': model.effective_rank.item()})
             
             
     val_loss /= len(val_dl.dataset)
     val_losses.append(val_loss)
-    pred_loss = pred_loss / len(val_dl.dataset)
-    pred_losses.append(pred_loss)
+    e_rank = e_rank / len(val_dl.dataset)
+    e_ranks.append(e_rank)
     
     scheduler.step()
     
-    print(f"Epoch [{epoch+1}/{epochs}], Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Pred Loss: {pred_loss:.4f}")
+    print(f"Epoch [{epoch+1}/{epochs}], Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Effective Rank: {e_rank:.2f}")
 
     # Saving model, reconstructions, losses
     torch.save(model.state_dict(), f"{output_dir}/MLAE.pth")
@@ -517,8 +516,8 @@ for epoch in range(epochs):
     ax1.legend(loc='upper left')
     
     ax2 = ax1.twinx()
-    ax2.plot(range(1, epoch + 2), pred_losses, label='PredLoss', color='tab:green')
-    ax2.set_ylabel('Prediction Loss', color='tab:green')
+    ax2.plot(range(1, epoch + 2), e_ranks, label='EffRank', color='tab:green')
+    ax2.set_ylabel('Effective Rank', color='tab:green')
     ax2.tick_params(axis='y', labelcolor='tab:green')
     ax2.legend(loc='upper right')
     
