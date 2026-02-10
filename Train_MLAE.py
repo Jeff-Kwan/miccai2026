@@ -24,9 +24,9 @@ batch_size = 32
 learning_rate = 3e-4
 weight_decay = 1e-2
 max_frames = 32
-LAMBDAlat = 0.1    # M rank
-LAMBDAz = 0.1      # Z deviation
-slow_factor = 0.1  # for motion_basis updates
+LAMBDAlat = 2e-3    # M rank
+LAMBDAz = 1.0       # Z deviation
+slow_factor = 0.02  # for motion_basis updates
 
 # torch.backends.cudnn.enabled = True
 # torch.backends.cudnn.benchmark = True
