@@ -312,26 +312,18 @@ class VideoMotionMAE(nn.Module):
 
 # ----------------------------- example -----------------------------
 if __name__ == "__main__":
-    enc = VideoViTEncoder(VideoViTCfg(dim=384, depth=12, heads=6, patch=8))
-    dec = VideoViTDecoder(
-        enc_dim=384,
-        patch=8,
-        in_chans=3,
-        cfg=VideoViTDecCfg(dec_dim=256, dec_depth=2, dec_heads=8),
-    )
-    mae = VideoMotionMAE(
-        encoder=enc,
-        decoder=dec,
-        frame_decoder=SimpleConvDecoder(latent=384, out_dim=3, base=256),
-        norm_pix_loss=True,
-        loss_type="mse",
-        mask_ratio=0.75,
-    )
+    import json
+    config = json.load(open("config/VMAE.json", "r"))
+    enc = VideoViTEncoder(VideoViTCfg(**config["encoder"]))
+    dec = VideoViTDecoder(enc_dim=config["encoder"]["dim"], patch=config["encoder"]["patch"], 
+                        in_chans=config["encoder"]["in_chans"], cfg=VideoViTDecCfg(**config["decoder"]))
+    frame_dec = SimpleConvDecoder(latent=config["encoder"]["dim"], out_dim=config["encoder"]["in_chans"], base=config["decoder"]["dec_dim"])
+    mae = VideoMotionMAE(enc, dec, frame_dec, motion_dim=2, norm_pix_loss=False, mask_ratio=0.75)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     mae = mae.to(device)
 
-    B, T, C, H, W = 8, 32, 3, 128, 128
+    B, T, C, H, W = 32, 64, 3, 112, 112
     video = torch.randn(B, T, C, H, W, device=device)
 
     # Example timestamps: 0..T-1 for each sample (you can pass real timestamps here)

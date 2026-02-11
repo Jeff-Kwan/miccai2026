@@ -18,13 +18,13 @@ output_dir = f"results/{date}/{timestamp}_VMAE"
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 200
+epochs = 300
 batch_size = 32
 learning_rate = 2e-4
 weight_decay = 1e-2
 max_frames = 64
 
-torch.set_float32_matmul_precision('high')
+torch.set_float32_matmul_precision('medium')
 autocast = True
 torch_compile = True
 workers = 64

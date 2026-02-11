@@ -191,19 +191,19 @@ class MAETrainer:
 
     def train(self):
         for epoch in range(self.cfg.epochs):
-            # train_loss = self.train_one_epoch(epoch)
-            # val_loss = self.validate_one_epoch(epoch)
+            train_loss = self.train_one_epoch(epoch)
+            val_loss = self.validate_one_epoch(epoch)
 
-            # self.train_losses.append(train_loss)
-            # self.val_losses.append(val_loss)
+            self.train_losses.append(train_loss)
+            self.val_losses.append(val_loss)
 
-            # if self.scheduler is not None:
-            #     self.scheduler.step()
+            if self.scheduler is not None:
+                self.scheduler.step()
 
-            # print(
-            #     f"Epoch [{epoch+1}/{self.cfg.epochs}], "
-            #     f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
-            # )
+            print(
+                f"Epoch [{epoch+1}/{self.cfg.epochs}], "
+                f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
+            )
 
             if self.cfg.save_every_epoch:
                 self._save_checkpoint("VMAE.pth")

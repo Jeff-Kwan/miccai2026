@@ -8,3 +8,4 @@ tqdm
 imageio
 scipy
 scikit-learn
+scikit-image
