@@ -5,7 +5,7 @@ from datahandling.PreTrainEchoDynaDataset import load_echodyna_downstream_datase
 from models.VideoViT import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
 from models.ViTMAEMotion import VideoMotionMAE, SimpleConvDecoder
 import os
-from LMP_utils import compute_main_orientation_and_extrema
+from ref_utils.LMP.LMP_utils import compute_main_orientation_and_extrema
 from scipy.signal import find_peaks, savgol_filter
 import numpy as np 
 import matplotlib.pyplot as plt 
