@@ -355,7 +355,6 @@ class VideoViTDecoder(nn.Module):
         self.cfg = cfg
 
         self.proj_in = nn.Linear(enc_dim, cfg.dec_dim, bias=True)
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, cfg.dec_dim))
         self.gcls = nn.Parameter(torch.zeros(1, 1, cfg.dec_dim))
 
         self.blocks = nn.ModuleList([
@@ -368,7 +367,6 @@ class VideoViTDecoder(nn.Module):
         self._init()
 
     def _init(self):
-        trunc_normal_(self.mask_token)
         trunc_normal_(self.gcls)
         for m in self.modules():
             if isinstance(m, nn.Linear):
@@ -396,7 +394,7 @@ class VideoViTDecoder(nn.Module):
         enc_tokens: torch.Tensor,          # (B, T, 1+Nvis, Denc)
         keep_idx: torch.Tensor,            # (B, T, Nvis)
         hw: Tuple[int, int],
-        mask_token: Optional[torch.Tensor] = None,  # overrides self.mask_token if not None
+        mask_token: Optional[torch.Tensor],# Shared across frame, (B, T, 1, Ddec)
     ) -> torch.Tensor:
         B, T, Lvis, Denc = enc_tokens.shape
         h, w = hw
@@ -419,11 +417,7 @@ class VideoViTDecoder(nn.Module):
         Ddec = vis.size(-1)
 
         # IMPORTANT for autocast: cast fp32 params to activation dtype before use
-        if mask_token is not None:
-            full = mask_token.to(dtype=work_dtype, device=work_dev).clone()
-        else:
-            mask_tok = self.mask_token.to(dtype=work_dtype, device=work_dev)
-            full = mask_tok.expand(B * T, N, Ddec).clone()  # now already correct dtype/device    
+        full = mask_token.to(dtype=work_dtype, device=work_dev).clone()  
         g = self.gcls.to(dtype=work_dtype, device=work_dev).expand(B, 1, -1)
 
         # scatter visible into full grid of mask tokens

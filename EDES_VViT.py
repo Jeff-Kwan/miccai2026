@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_09/17_01_VMAE"
+load_dir = "/workspace/miccai2026/results/2026_02_10/15_52_VMAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -111,9 +111,9 @@ with torch.no_grad():
         # forward + convert once
         z_motion = mae(videos.to(device))["z_motion"].squeeze().cpu().numpy()
 
-        # group_ed, group_es, edpoint, espoint, traj, direction = \
-        #     compute_main_orientation_and_extrema(z_motion, 24, visualize=False)
-        group_es, group_ed, _ = detect_peaks_and_valleys(z_motion[:, 1], edge_events=True)
+        group_ed, group_es, edpoint, espoint, traj, direction = \
+            compute_main_orientation_and_extrema(z_motion, 24, visualize=False)
+        # group_es, group_ed, _ = detect_peaks_and_valleys(z_motion[:, 1], edge_events=True)
 
         # no intermediate lists
         ed_mae_list.append(min(abs(edpt - gt_ed) for edpt in group_ed))

@@ -98,14 +98,15 @@ class VideoMotionMAE(nn.Module):
 
         # Motion!
         self.template_mlp = nn.Sequential(
-            nn.Linear(encoder.cfg.dim, encoder.cfg.dim),
+            nn.Linear(encoder.cfg.dim, encoder.cfg.dim*2),
             nn.GELU(),
-            nn.Linear(encoder.cfg.dim, encoder.cfg.dim))
+            nn.Linear(encoder.cfg.dim*2, encoder.cfg.dim))
         self.motion_mlp = nn.Sequential(
-            nn.Linear(encoder.cfg.dim, encoder.cfg.dim),
+            nn.Linear(encoder.cfg.dim, encoder.cfg.dim*2),
             nn.GELU(),
-            nn.Linear(encoder.cfg.dim, motion_dim))
+            nn.Linear(encoder.cfg.dim*2, motion_dim))
         self.motion_basis = nn.Parameter(torch.randn(encoder.cfg.dim, motion_dim) * 0.01)
+        self.z_proj = nn.Linear(encoder.cfg.dim*2, decoder.cfg.dec_dim) 
 
     # --------------------- MAE helpers (same pathway as before) ---------------------
 
@@ -192,8 +193,10 @@ class VideoMotionMAE(nn.Module):
         # --- targets for MAE patch loss ---
         if target is None:
             target_full, hw = self._patchify(video, self.patch)  # (B,T,N,patch_dim)
+            target_video = video
         else:
             target_full, hw = self._patchify(target, self.patch)  # (B,T,N,patch_dim)
+            target_video = target
             
         h, w = hw
         N = target_full.size(2)
@@ -201,12 +204,11 @@ class VideoMotionMAE(nn.Module):
 
         # --- keep_idx (same logic as old wrapper) ---
         if keep_idx is None:
-            if self.training:
-                r = self.mask_ratio if mask_ratio is None else float(mask_ratio)
-                if not (0.0 < r < 1.0):
-                    raise ValueError(f"mask_ratio must be in (0,1), got {r}")
-                Nvis = max(1, int(round(N * (1.0 - r))))
-                keep_idx = self._random_keep_idx(B, T, N, Nvis, video.device)
+            r = self.mask_ratio if mask_ratio is None else float(mask_ratio)
+            if not (0.0 < r < 1.0):
+                raise ValueError(f"mask_ratio must be in (0,1), got {r}")
+            Nvis = max(1, int(round(N * (1.0 - r))))
+            keep_idx = self._random_keep_idx(B, T, N, Nvis, video.device)
         else:
             if keep_idx.dim() != 3 or keep_idx.size(0) != B or keep_idx.size(1) != T:
                 raise ValueError(f"keep_idx must be (B,T,Nvis)=({B},{T},*), got {tuple(keep_idx.shape)}")
@@ -235,8 +237,7 @@ class VideoMotionMAE(nn.Module):
         frame_z = z_template + delta_z                        # (B,T,Denc)
 
         pred_frames = self.frame_decoder(frame_z)  # (B,T,C*,Hf,Wf)
-        # compute frame loss vs resized input (so it works even if input isn't 128x128)
-        video_tgt = self._resize_video(video, self.frame_target_size)
+
         if pred_frames.shape[2] != C:
             raise ValueError(
                 f"frame_decoder output channels={pred_frames.shape[2]} must match input C={C} "
@@ -247,10 +248,13 @@ class VideoMotionMAE(nn.Module):
                 f"frame_decoder output spatial={tuple(pred_frames.shape[-2:])} "
                 f"must equal frame_target_size={self.frame_target_size}."
             )
-        loss_frame = self._loss(pred_frames, video_tgt)
+        loss_frame = self._loss(pred_frames, target_video)
 
         # --- (A) MAE masked-patch decoding (same as old wrapper) ---
-        pred_masked = self.decoder(enc_tokens, keep_idx=keep_idx, hw=hw)  # (B,T,Nmask,patch_dim)
+        # Create "mask" token from global & frame information
+        mask_tok = self.z_proj(torch.cat([gcls.unsqueeze(1).expand(-1, T, -1), frame_cls], dim=-1))
+        mask_tok = mask_tok.view(B * T, -1).unsqueeze(1).expand(-1, N, -1)
+        pred_masked = self.decoder(enc_tokens, mask_token=mask_tok, keep_idx=keep_idx, hw=hw)  # (B,T,Nmask,patch_dim)
         Nmask = N - Nvis
 
         # gather masked targets in the same order decoder uses

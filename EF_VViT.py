@@ -10,13 +10,13 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_09/17_01_VMAE"
+load_dir = "results/2026_02_10/15_52_VMAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
 max_frames = 32
-epochs = 100
-batch_size = 16
+epochs = 30
+batch_size = 8
 enc = VideoViTEncoder(VideoViTCfg(dim=384, depth=8, heads=6, patch=8))
 dec = VideoViTDecoder(enc_dim=384, patch=8, in_chans=3, cfg=VideoViTDecCfg(dec_dim=256, dec_depth=2, dec_heads=8))
 frame_dec = SimpleConvDecoder(latent=384, out_dim=3, base=256)
@@ -29,21 +29,22 @@ for param in mae.parameters():
     param.requires_grad = False
 
 class EDESMLPProbe(nn.Module):
-    def __init__(self, latent_dim, mae, selection=2):
+    def __init__(self, latent_dim, mae):
         super().__init__()
         self.encoder = mae.encoder
-        self.query = nn.Parameter(torch.randn(1, 1, latent_dim))
         self.attn_pool = nn.MultiheadAttention(embed_dim=latent_dim, num_heads=6, batch_first=True)
-        self.fc = nn.Linear(latent_dim, 1)
-        self.fc.bias.data.fill_(0.556)
+        self.fc = nn.Sequential(
+            nn.LayerNorm(latent_dim),
+            nn.Linear(latent_dim, 1))
+        self.fc[1].bias.data.fill_(0.556)
 
     def forward(self, video):
         with torch.no_grad():
             gcls, frames, hw = self.encoder(video)
-            tokens = torch.cat([gcls.unsqueeze(1), frames[:, :, 0, :]], dim=1)
+            fcls = frames[:, :, 0, :]
             
-        # Soft selection
-        features = self.attn_pool(self.query.expand(video.size(0), -1, -1), tokens, tokens)[0].squeeze(1)  # [B, D]
+        # Attention Selection
+        features = self.attn_pool(gcls.unsqueeze(1), fcls, fcls)[0].squeeze(1)  # [B, D]
         pred = self.fc(features)
         return pred.squeeze(-1)
 
@@ -117,3 +118,19 @@ for epoch in range(epochs):
     val_rmse /= len(val_dl.dataset)
 
     print(f"Epoch {epoch+1}/{epochs} - Train Loss: {train_loss:.4f} - Val MAE Loss: {val_loss:.4f}, Val RMSE: {val_rmse:.4f}")
+
+test_loss = 0.0; test_rmse = 0.0
+with torch.no_grad():
+    for videos, ef in test_dl:
+        videos, ef = videos.to(device), ef.to(device)
+        pred_ef = probe(videos)
+        ef = ef * 100.0  # Denormalize EF to original scale
+        pred_ef = pred_ef * 100.0  # Denormalize EF to original scale
+        loss = l1(pred_ef, ef)
+        rmse = torch.sqrt(mse(pred_ef, ef))
+        test_loss += loss.item() * videos.size(0)
+        test_rmse += rmse.item() * videos.size(0)
+    test_loss /= len(test_dl.dataset)
+    test_rmse /= len(test_dl.dataset)
+
+print(f"Test MAE Loss: {test_loss:.4f}, Test RMSE: {test_rmse:.4f}")

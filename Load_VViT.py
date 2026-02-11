@@ -11,7 +11,7 @@ import numpy as np
 import imageio
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_09/17_01_VMAE"
+load_dir = "results/2026_02_10/15_52_VMAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
