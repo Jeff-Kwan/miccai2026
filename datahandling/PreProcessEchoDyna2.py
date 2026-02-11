@@ -186,12 +186,11 @@ def _process_one(item: EchoDynaItem) -> Tuple[str, bool, bool, str]:
         # Convert to [T,C,H,W] and normalize to [0,1]
         v_save = (
             v.permute(0, 3, 1, 2)   # [T,C,H,W]
-            .float()
-            .div_(255.0)           # normalize to [0,1]
             .contiguous()
-            .to(dtype=dtype)
+            .to(torch.uint8)        # keep [0,255] uint8
             .cpu()
         )
+
 
         meta = dict(item.metadata)
         meta.update(
@@ -320,6 +319,6 @@ if __name__ == "__main__":
         dtype=torch.float16,
         save_ext=".pt",
         video_backend=None,
-        processes=16,
+        processes=64,
         chunksize=4,
     )

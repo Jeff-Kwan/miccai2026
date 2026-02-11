@@ -43,6 +43,7 @@ class EchoDynaVideoDataset(Dataset):
         payload = torch.load(path, map_location="cpu")
 
         video = payload["video"]  # [T,C,H,W]
+        video = video.float().div_(255.0)   # normalize to [0,1]
         if self.video_dtype is not None:
             video = video.to(self.video_dtype)
         if self.device is not None:
@@ -165,6 +166,7 @@ class EchoDynaDownstreamDataset(Dataset):
 
         vp = torch.load(video_path, map_location="cpu")
         video = vp["video"]  # [T,C,H,W]
+        video = video.float().div_(255.0)   # normalize to [0,1]
 
         if self.video_dtype is not None:
             video = video.to(self.video_dtype)
