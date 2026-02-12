@@ -120,10 +120,11 @@ class MAETrainer:
         else:
             torch.save(self.model.state_dict(), path)
 
-    def _save_loss_plot(self):
+    def _save_loss_plot(self, run_val=True):
         fig, ax = plt.subplots(figsize=(8, 6))
         ax.plot(range(1, len(self.train_losses) + 1), self.train_losses, label="Training")
-        ax.plot(range(1, len(self.val_losses) + 1), self.val_losses, label="Validation")
+        if run_val:
+            ax.plot(range(1, len(self.val_losses) + 1), self.val_losses, label="Validation")
         ax.set_xlabel("Epoch")
         ax.set_ylabel("Reconstruction Loss")
         ax.set_yscale("log")
@@ -189,26 +190,27 @@ class MAETrainer:
 
         return running / len(self.val_dl.dataset)
 
-    def train(self):
+    def train(self, run_val=True):
         for epoch in range(self.cfg.epochs):
             train_loss = self.train_one_epoch(epoch)
-            val_loss = self.validate_one_epoch(epoch)
-
             self.train_losses.append(train_loss)
-            self.val_losses.append(val_loss)
+            if run_val:
+                val_loss = self.validate_one_epoch(epoch)
+                self.val_losses.append(val_loss)
 
             if self.scheduler is not None:
                 self.scheduler.step()
 
             print(
                 f"Epoch [{epoch+1}/{self.cfg.epochs}], "
-                f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}"
+                f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}" if run_val else 
+                f"Epoch [{epoch+1}/{self.cfg.epochs}], Train Loss: {train_loss:.4f}"
             )
 
             if self.cfg.save_every_epoch:
                 self._save_checkpoint("VMAE.pth")
                 if self.val_ds is not None:
                     plot_recons(self.model, self.val_ds, self.cfg.output_dir, self.device)
-                self._save_loss_plot()
+                self._save_loss_plot(run_val=run_val)
 
         return {"train_losses": self.train_losses, "val_losses": self.val_losses}

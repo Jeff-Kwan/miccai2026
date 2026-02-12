@@ -71,4 +71,4 @@ trainer = MAETrainer(
     config=cfg,
 )
 
-history = trainer.train()
+history = trainer.train(run_val=False)

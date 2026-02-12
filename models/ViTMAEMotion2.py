@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .VideoViT2 import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
+from VideoViT2 import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
 
 
 class SimpleConvDecoder(nn.Module):
@@ -125,13 +125,17 @@ class VideoMotionMAE(nn.Module):
         return x, (h, w)
 
     @staticmethod
+    @staticmethod
     def _random_keep_idx(B: int, T: int, N: int, Nvis: int, device) -> torch.Tensor:
-        # Uniform random per-frame permutations, take first Nvis
-        idx = torch.empty((B, T, Nvis), device=device, dtype=torch.long)
+        """
+        Sample visible patches once per video (per b), then repeat across time.
+        Output: (B,T,Nvis) with identical keep indices for all t.
+        """
+        idx_b = torch.empty((B, Nvis), device=device, dtype=torch.long)
         for b in range(B):
-            for t in range(T):
-                idx[b, t] = torch.randperm(N, device=device)[:Nvis]
-        return idx
+            idx_b[b] = torch.randperm(N, device=device)[:Nvis]
+        return idx_b.unsqueeze(1).expand(B, T, Nvis).contiguous()
+
 
     @staticmethod
     def _masked_idx_sorted(N: int, keep_bt: torch.Tensor) -> torch.Tensor:
@@ -248,10 +252,8 @@ class VideoMotionMAE(nn.Module):
         # --- (A) MAE masked-patch decoding ---
         # Create a full (B,T,N,Ddec) "mask token grid" from global & frame information.
         # Decoder expects mask_token shaped (B, T, N, Ddec).
-        g_rep = gcls.unsqueeze(1).expand(-1, T, -1)                 # (B,T,Denc)
-        pair = torch.cat([g_rep, frame_cls], dim=-1)                # (B,T,2*Denc)
-        base_tok = self.z_proj(pair)                                # (B,T,Ddec)
-        mask_tok = base_tok.unsqueeze(2).expand(-1, -1, N, -1)      # (B,T,N,Ddec)
+        mask_tok = self.z_proj(frame_z)                             # (B,T,Ddec)
+        mask_tok = mask_tok.unsqueeze(2).expand(-1, -1, N, -1)      # (B,T,N,Ddec)
         mask_tok = mask_tok.reshape(B * T, N, -1)
 
         pred_masked = self.decoder(

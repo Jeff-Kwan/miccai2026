@@ -189,8 +189,10 @@ class MLP(nn.Module):
 
 
 class VideoBlock(nn.Module):
-    def __init__(self, dim: int, heads: int, mlp_ratio: float, rope_base: float, eps: float):
+    def __init__(self, dim: int, heads: int, mlp_ratio: float, 
+                 rope_base: float, eps: float, config: str):
         super().__init__()
+        self.config = config
         self.n_spa = nn.LayerNorm(dim, eps=eps)
         self.spa = MHSA(dim, heads, rope_base, rope_kind="2d")
 
@@ -201,6 +203,31 @@ class VideoBlock(nn.Module):
         self.n_mlp = nn.LayerNorm(dim, eps=eps)
         self.mlp = MLP(dim, mlp_ratio)
 
+    def spatial_attn(self, gcls: torch.Tensor, frames: torch.Tensor, hw: tuple[int, int], patch_pos_idx: Optional[torch.Tensor]):
+        B, T, Lf, D = frames.shape
+        x = frames.reshape(B * T, Lf, D)
+        pos = patch_pos_idx.reshape(B * T, Lf - 1) if patch_pos_idx is not None else None
+        x = x + self.spa(self.n_spa(x), rope_shape=hw, rope_pos_idx=pos, n_prefix=1)
+        return x.reshape(B, T, Lf, D)
+
+    def temporal_attn(self, gcls: torch.Tensor, frames: torch.Tensor, timestamps: torch.Tensor):
+        B, T, Lf, D = frames.shape
+        fcls = frames[:, :, 0, :]
+        tmp_in = torch.cat((gcls, fcls), dim=1)
+        tpos = timestamps.to(device=tmp_in.device) * self.t_scale
+        tmp_out = tmp_in + self.tmp(self.n_tmp(tmp_in), rope_pos=tpos, n_prefix=1)
+        gcls = tmp_out[:, :1, :]
+        frames[:, :, 0, :] = tmp_out[:, 1:, :]
+        return gcls, frames
+
+    def mlp_block(self, gcls: torch.Tensor, frames: torch.Tensor):
+        B, T, Lf, D = frames.shape
+        all_tok = torch.cat((gcls, frames.reshape(B, T * Lf, D)), dim=1)
+        all_tok = all_tok + self.mlp(self.n_mlp(all_tok))
+        gcls = all_tok[:, :1, :]
+        frames = all_tok[:, 1:, :].reshape(B, T, Lf, D)
+        return gcls, frames
+
     def forward(
         self,
         gcls: torch.Tensor,                   # (B, 1, D)
@@ -209,30 +236,18 @@ class VideoBlock(nn.Module):
         patch_pos_idx: Optional[torch.Tensor],# (B, T, Nvis)
         timestamps: torch.Tensor,             # (B, T)
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        B, T, Lf, D = frames.shape
-        n_prefix = 1
-        Nvis = Lf - 1
-
-        x = frames.reshape(B * T, Lf, D)
-        pos = patch_pos_idx.reshape(B * T, Nvis) if (patch_pos_idx is not None and Nvis > 0) else None
-        x = x + self.spa(self.n_spa(x), rope_shape=hw, rope_pos_idx=pos, n_prefix=n_prefix)
-        frames = x.reshape(B, T, Lf, D)
-
-        fcls = frames[:, :, 0, :]
-        tmp_in = torch.cat((gcls, fcls), dim=1)
-
-        if timestamps.dim() != 2 or timestamps.size(0) != B or timestamps.size(1) != T:
-            raise ValueError(f"timestamps must be (B,T)=({B},{T}), got {tuple(timestamps.shape)}")
-        tpos = timestamps.to(device=tmp_in.device) * self.t_scale
-
-        tmp_out = tmp_in + self.tmp(self.n_tmp(tmp_in), rope_pos=tpos, n_prefix=1)
-        gcls = tmp_out[:, :1, :]
-        frames[:, :, 0, :] = tmp_out[:, 1:, :]
-
-        all_tok = torch.cat((gcls, frames.reshape(B, T * Lf, D)), dim=1)
-        all_tok = all_tok + self.mlp(self.n_mlp(all_tok))
-        gcls = all_tok[:, :1, :]
-        frames = all_tok[:, 1:, :].reshape(B, T, Lf, D)
+        if self.config == 'enc':
+            # Encoder is spatial - temporal - mlp
+            frames = self.spatial_attn(gcls, frames, hw, patch_pos_idx)
+            gcls, frames = self.temporal_attn(gcls, frames, timestamps)
+            gcls, frames = self.mlp_block(gcls, frames)
+        elif self.config == 'dec':
+            # Decoder is temporal - spatial - mlp
+            gcls, frames = self.temporal_attn(gcls, frames, timestamps)
+            frames = self.spatial_attn(gcls, frames, hw, patch_pos_idx)
+            gcls, frames = self.mlp_block(gcls, frames)
+        else:
+            raise ValueError(f"Unknown video transformer block config: {self.config}")
         return gcls, frames
 
 
@@ -256,7 +271,7 @@ class VideoViTEncoder(nn.Module):
         self.cls = nn.Parameter(torch.zeros(1, 1, cfg.dim))
         self.gcls = nn.Parameter(torch.zeros(1, 1, cfg.dim))
         self.blocks = nn.ModuleList([
-            VideoBlock(cfg.dim, cfg.heads, cfg.mlp_ratio, cfg.rope_base, cfg.eps)
+            VideoBlock(cfg.dim, cfg.heads, cfg.mlp_ratio, cfg.rope_base, cfg.eps, config='enc')
             for _ in range(cfg.depth)
         ])
         self.norm = nn.LayerNorm(cfg.dim, eps=cfg.eps)
@@ -344,7 +359,7 @@ class VideoViTDecoder(nn.Module):
         self.gcls = nn.Parameter(torch.zeros(1, 1, cfg.dec_dim))
 
         self.blocks = nn.ModuleList([
-            VideoBlock(cfg.dec_dim, cfg.dec_heads, cfg.mlp_ratio, cfg.rope_base, cfg.eps)
+            VideoBlock(cfg.dec_dim, cfg.dec_heads, cfg.mlp_ratio, cfg.rope_base, cfg.eps, config='dec')
             for _ in range(cfg.dec_depth)
         ])
         self.norm = nn.LayerNorm(cfg.dec_dim, eps=cfg.eps)
