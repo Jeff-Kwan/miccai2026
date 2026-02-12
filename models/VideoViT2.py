@@ -198,12 +198,12 @@ class VideoBlock(nn.Module):
 
         self.n_tmp = nn.LayerNorm(dim, eps=eps)
         self.tmp = MHSA(dim, heads, rope_base, rope_kind="1d_ts")
-        self.register_buffer('t_scale', torch.tensor(64.0))
+        self.register_buffer('t_scale', torch.tensor(32.0))
 
         self.n_mlp = nn.LayerNorm(dim, eps=eps)
         self.mlp = MLP(dim, mlp_ratio)
 
-    def spatial_attn(self, gcls: torch.Tensor, frames: torch.Tensor, hw: tuple[int, int], patch_pos_idx: Optional[torch.Tensor]):
+    def spatial_attn(self, frames: torch.Tensor, hw: tuple[int, int], patch_pos_idx: Optional[torch.Tensor]):
         B, T, Lf, D = frames.shape
         x = frames.reshape(B * T, Lf, D)
         pos = patch_pos_idx.reshape(B * T, Lf - 1) if patch_pos_idx is not None else None
@@ -211,7 +211,6 @@ class VideoBlock(nn.Module):
         return x.reshape(B, T, Lf, D)
 
     def temporal_attn(self, gcls: torch.Tensor, frames: torch.Tensor, timestamps: torch.Tensor):
-        B, T, Lf, D = frames.shape
         fcls = frames[:, :, 0, :]
         tmp_in = torch.cat((gcls, fcls), dim=1)
         tpos = timestamps.to(device=tmp_in.device) * self.t_scale
@@ -238,13 +237,13 @@ class VideoBlock(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if self.config == 'enc':
             # Encoder is spatial - temporal - mlp
-            frames = self.spatial_attn(gcls, frames, hw, patch_pos_idx)
+            frames = self.spatial_attn(frames, hw, patch_pos_idx)
             gcls, frames = self.temporal_attn(gcls, frames, timestamps)
             gcls, frames = self.mlp_block(gcls, frames)
         elif self.config == 'dec':
             # Decoder is temporal - spatial - mlp
             gcls, frames = self.temporal_attn(gcls, frames, timestamps)
-            frames = self.spatial_attn(gcls, frames, hw, patch_pos_idx)
+            frames = self.spatial_attn(frames, hw, patch_pos_idx)
             gcls, frames = self.mlp_block(gcls, frames)
         else:
             raise ValueError(f"Unknown video transformer block config: {self.config}")
@@ -356,7 +355,6 @@ class VideoViTDecoder(nn.Module):
         self.cfg = cfg
 
         self.proj_in = nn.Linear(enc_dim, cfg.dec_dim, bias=True)
-        self.gcls = nn.Parameter(torch.zeros(1, 1, cfg.dec_dim))
 
         self.blocks = nn.ModuleList([
             VideoBlock(cfg.dec_dim, cfg.dec_heads, cfg.mlp_ratio, cfg.rope_base, cfg.eps, config='dec')
@@ -368,7 +366,6 @@ class VideoViTDecoder(nn.Module):
         self._init()
 
     def _init(self):
-        trunc_normal_(self.gcls)
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 trunc_normal_(m.weight)
@@ -393,6 +390,7 @@ class VideoViTDecoder(nn.Module):
 
     def forward(
         self,
+        gcls: torch.Tensor,                   # (B, 1, Denc)
         enc_tokens: torch.Tensor,      # (B, T, 1+Nvis, Denc)
         keep_idx: torch.Tensor,        # (B, T, Nvis)
         hw: Tuple[int, int],
@@ -411,6 +409,7 @@ class VideoViTDecoder(nn.Module):
         if Nmask <= 0:
             raise ValueError("No masked tokens (Nmask<=0)")
 
+        gcls = self.proj_in(gcls).unsqueeze(1)
         x = self.proj_in(enc_tokens)
         work_dtype, work_dev = x.dtype, x.device
 
@@ -419,7 +418,6 @@ class VideoViTDecoder(nn.Module):
         Ddec = vis.size(-1)
 
         full = mask_token.to(dtype=work_dtype, device=work_dev).clone()
-        g = self.gcls.to(dtype=work_dtype, device=work_dev).expand(B, 1, -1)
 
         vis_bt = vis.reshape(B * T, Nvis, Ddec)
         keep_bt = keep_idx.reshape(B * T, Nvis)
@@ -429,7 +427,7 @@ class VideoViTDecoder(nn.Module):
         frames = torch.cat((fcls, full.view(B, T, N, Ddec)), dim=2)
 
         for blk in self.blocks:
-            g, frames = blk(g, frames, hw, patch_pos_idx=patch_pos, timestamps=timestamps)
+            gcls, frames = blk(gcls, frames, hw, patch_pos_idx=patch_pos, timestamps=timestamps)
 
         pred = self.head(self.norm(frames)[:, :, 1:, :])
 

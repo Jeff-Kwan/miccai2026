@@ -105,7 +105,7 @@ class VideoMotionMAE(nn.Module):
         self.motion_basis = nn.Parameter(torch.randn(encoder.cfg.dim, motion_dim) * 0.01)
 
         # used to create decoder-dim tokens for all N positions
-        self.z_proj = nn.Linear(encoder.cfg.dim * 2, decoder.cfg.dec_dim)
+        self.z_proj = nn.Linear(encoder.cfg.dim, decoder.cfg.dec_dim)
 
     # --------------------- MAE helpers ---------------------
 
@@ -257,6 +257,7 @@ class VideoMotionMAE(nn.Module):
         mask_tok = mask_tok.reshape(B * T, N, -1)
 
         pred_masked = self.decoder(
+            gcls,
             enc_tokens,
             keep_idx=keep_idx,
             hw=hw,
