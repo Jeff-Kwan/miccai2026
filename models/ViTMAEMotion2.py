@@ -252,16 +252,16 @@ class VideoMotionMAE(nn.Module):
         # --- (A) MAE masked-patch decoding ---
         # Create a full (B,T,N,Ddec) "mask token grid" from global & frame information.
         # Decoder expects mask_token shaped (B, T, N, Ddec).
-        mask_tok = self.z_proj(frame_z)                             # (B,T,Ddec)
-        mask_tok = mask_tok.unsqueeze(2).expand(-1, -1, N, -1)      # (B,T,N,Ddec)
-        mask_tok = mask_tok.reshape(B * T, N, -1)
+        # mask_tok = self.z_proj(frame_z)                             # (B,T,Ddec)
+        # mask_tok = mask_tok.unsqueeze(2).expand(-1, -1, N, -1)      # (B,T,N,Ddec)
+        # mask_tok = mask_tok.reshape(B * T, N, -1)
 
         pred_masked = self.decoder(
             gcls,
             enc_tokens,
             keep_idx=keep_idx,
             hw=hw,
-            mask_token=mask_tok,
+            mask_token=None,
             timestamps=timestamps,
         )  # (B,T,Nmask,patch_dim)
 

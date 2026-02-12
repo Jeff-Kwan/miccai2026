@@ -355,6 +355,7 @@ class VideoViTDecoder(nn.Module):
         self.cfg = cfg
 
         self.proj_in = nn.Linear(enc_dim, cfg.dec_dim, bias=True)
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, cfg.dec_dim))
 
         self.blocks = nn.ModuleList([
             VideoBlock(cfg.dec_dim, cfg.dec_heads, cfg.mlp_ratio, cfg.rope_base, cfg.eps, config='dec')
@@ -366,6 +367,7 @@ class VideoViTDecoder(nn.Module):
         self._init()
 
     def _init(self):
+        trunc_normal_(self.mask_token)
         for m in self.modules():
             if isinstance(m, nn.Linear):
                 trunc_normal_(m.weight)
@@ -394,7 +396,7 @@ class VideoViTDecoder(nn.Module):
         enc_tokens: torch.Tensor,      # (B, T, 1+Nvis, Denc)
         keep_idx: torch.Tensor,        # (B, T, Nvis)
         hw: Tuple[int, int],
-        mask_token: torch.Tensor,      # (B, T, N, Ddec)
+        mask_token: torch.Tensor | None,      # (B, T, N, Ddec)
         timestamps: torch.Tensor,      # (B, T)
     ) -> torch.Tensor:
         B, T, Lvis, Denc = enc_tokens.shape
@@ -417,7 +419,11 @@ class VideoViTDecoder(nn.Module):
         vis = x[:, :, 1:, :]
         Ddec = vis.size(-1)
 
-        full = mask_token.to(dtype=work_dtype, device=work_dev).clone()
+        if mask_token is not None:
+            full = mask_token.to(dtype=work_dtype, device=work_dev).clone()
+        else:
+            full = self.mask_token.expand(B * T, N, -1).to(dtype=work_dtype, device=work_dev).clone()
+
 
         vis_bt = vis.reshape(B * T, Nvis, Ddec)
         keep_bt = keep_idx.reshape(B * T, Nvis)

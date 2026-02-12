@@ -105,6 +105,17 @@ def pretrain_collate(
                 ts = ts_sorted
             # ---------------------------------------------------
 
+        # Augmentations
+        if augmentations is not None:
+            aug_v = augmentations(v)
+            aug_v = aug_v * 2 - 1
+            augvs.append(aug_v)
+
+            # timestamp jitter
+            fps = s["metadata"]["FPS"]
+            jitter = (torch.rand_like(ts) - 0.5) * (0.5 / fps)  # up to ±0.25 frame jitter
+            ts = ts + jitter
+
         # shift timestamps to start at 0
         ts = ts - ts[0]
 
@@ -113,13 +124,6 @@ def pretrain_collate(
 
         vids.append(v)
         tss.append(ts)
-
-        # Augmentations
-        if augmentations is not None:
-            aug_v = augmentations(v)
-            aug_v = aug_v * 2 - 1
-            augvs.append(aug_v)
-
 
     out = {
         "video": torch.stack(vids, dim=0),       # [B,max_frames,C,H,W]
