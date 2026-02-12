@@ -122,3 +122,18 @@ def pretrain_collate(
         "video": torch.stack(vids, dim=0),       # [B,max_frames,C,H,W]
         "timestamps": torch.stack(tss, dim=0),   # [B,max_frames]
     }
+
+
+def EF_collate(batch: List[Dict[str, Any]],
+    *,
+    max_frames: int,
+    augmentations: Optional[torch.nn.Module] = None,
+    generator: Optional[torch.Generator] = None,
+    ) -> Dict[str, torch.Tensor]:
+    out = pretrain_collate(batch, max_frames=max_frames, augmentations=augmentations, generator=generator)
+
+    ef = [s["metadata"]["EF"] for s in batch]
+    ef = torch.tensor(ef, dtype=torch.float32, device=out["video"].device)
+    ef = ef / 100.0  # Normalize EF to [0, 1]
+    out["EF"] = ef
+    return out

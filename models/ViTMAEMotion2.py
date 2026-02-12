@@ -174,7 +174,6 @@ class VideoMotionMAE(nn.Module):
         keep_idx: torch.Tensor | None = None,     # (B,T,Nvis)
         mask_ratio: float | None = None,          # overrides self.mask_ratio if keep_idx is None
         return_pred: bool = False,
-        return_frame_pred: bool = False,
     ):
         """
         return_pred:

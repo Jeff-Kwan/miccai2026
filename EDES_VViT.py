@@ -1,37 +1,35 @@
 import torch 
 from torch import nn
 from torch.utils.data import DataLoader
-from datahandling.PreTrainEchoDynaDataset import load_echodyna_downstream_datasets
-from models.VideoViT import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
-from models.ViTMAEMotion import VideoMotionMAE, SimpleConvDecoder
+from datahandling.PreTrainEchoDynaDataset2 import load_echodyna_downstream_datasets
+from models.VideoViT2 import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
+from models.ViTMAEMotion2 import VideoMotionMAE, SimpleConvDecoder
 import os
 from ref_utils.LMP.LMP_utils import compute_main_orientation_and_extrema
 from scipy.signal import find_peaks, savgol_filter
 import numpy as np 
 import matplotlib.pyplot as plt 
 from tqdm import tqdm
+import json
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "/workspace/miccai2026/results/2026_02_10/15_52_VMAE"
-output_dir = os.path.join(load_dir, "reconstructions")
-os.makedirs(output_dir, exist_ok=True)
+load_dir = "results/2026_02_11/17_24_VMAE"
 
-max_frames = 32
-enc = VideoViTEncoder(VideoViTCfg(dim=384, depth=8, heads=6, patch=8))
-dec = VideoViTDecoder(enc_dim=384, patch=8, in_chans=3, cfg=VideoViTDecCfg(dec_dim=256, dec_depth=2, dec_heads=8))
-frame_dec = SimpleConvDecoder(latent=384, out_dim=3, base=256)
-mae = VideoMotionMAE(enc, dec, frame_dec, motion_dim=2, norm_pix_loss=True, mask_ratio=0.75)
+config = json.load(open("config/VMAE.json", "r"))
+enc = VideoViTEncoder(VideoViTCfg(**config["encoder"]))
+dec = VideoViTDecoder(enc_dim=config["encoder"]["dim"], patch=config["encoder"]["patch"], 
+                      in_chans=config["encoder"]["in_chans"], cfg=VideoViTDecCfg(**config["decoder"]))
+frame_dec = SimpleConvDecoder(latent=config["encoder"]["dim"], out_dim=config["encoder"]["in_chans"], base=config["decoder"]["dec_dim"])
+mae = VideoMotionMAE(enc, dec, frame_dec, motion_dim=2, norm_pix_loss=False, mask_ratio=0.75)
 mae.load_state_dict(torch.load(os.path.join(load_dir, "VMAE.pth"), map_location=device))
 mae = mae.to(device)
 mae.eval()
 
 # Dataset
 def collate_fn(batch):
-    # stack videos: [B, C, T, H, W]
+    # stack videos: [B, T, C, H, W]
     videos = torch.stack([sample["video"] for sample in batch], dim=0)
-
-    # reorder to [B, T, C, H, W]
-    videos = videos.permute(0, 2, 1, 3, 4).contiguous()
+    timestamps = torch.stack([sample["timestamps"] for sample in batch], dim=0)
 
     # collect frame indices
     frames_idx = []
@@ -43,7 +41,7 @@ def collate_fn(batch):
             fi = fi.long()
         frames_idx.append(fi)
 
-    return videos, frames_idx
+    return videos, timestamps, frames_idx
 
 train_ds, val_ds, test_ds = load_echodyna_downstream_datasets(allow_missing_masks=False)
 train_dl = DataLoader(train_ds, batch_size=1, shuffle=True,
@@ -101,15 +99,19 @@ def detect_peaks_and_valleys(
 
 ed_mae_list = []
 es_mae_list = []
-with torch.no_grad():
-    for videos, frames_idx in tqdm(test_dl):
+with torch.inference_mode():
+    for videos, timestamps, frames_idx in tqdm(test_dl):
         # pull scalars with minimal indexing + conversions
         gt_es, gt_ed = frames_idx[0]          # (es, ed) tensors
         gt_es = gt_es.item()
         gt_ed = gt_ed.item()
 
         # forward + convert once
-        z_motion = mae(videos.to(device))["z_motion"].squeeze().cpu().numpy()
+        videos = videos.to(device)  # [1, T, C, H, W]
+        timestamps = timestamps.to(device)  # [1, T]
+        with torch.autocast('cuda', torch.bfloat16):
+            z_motion = mae(videos, timestamps)["z_motion"]
+        z_motion = z_motion.float().squeeze().cpu().numpy()
 
         group_ed, group_es, edpoint, espoint, traj, direction = \
             compute_main_orientation_and_extrema(z_motion, 24, visualize=False)
