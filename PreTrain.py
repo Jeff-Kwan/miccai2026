@@ -6,7 +6,7 @@ import json
 
 from models.VideoViT2 import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
 from models.ViTMAEMotion2 import VideoMotionMAE, SimpleConvDecoder
-from datahandling.PreTrainEchoDynaDataset2 import load_echonet_dynamic_datasets
+from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
 from datahandling.augmentations.get_augmentations import get_pretrain_augmentations
 from datahandling.collate import pretrain_collate
 from utils.trainer import MAETrainer, TrainerConfig
@@ -26,7 +26,7 @@ max_frames = 64
 
 torch.set_float32_matmul_precision('medium')
 autocast = True
-torch_compile = True
+torch_compile = False
 workers = 64
 
 # Model
@@ -43,7 +43,7 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
 # Dataset
 aug = get_pretrain_augmentations()
-train_ds, val_ds, test_ds = load_echonet_dynamic_datasets()
+train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=False)
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers, 
     pin_memory=True, collate_fn=lambda x: pretrain_collate(x, max_frames=max_frames, augmentations=aug))
 val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=workers, 

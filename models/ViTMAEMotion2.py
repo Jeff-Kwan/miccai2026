@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .VideoViT2 import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
+from VideoViT2 import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
 
 
 class SimpleConvDecoder(nn.Module):
@@ -165,6 +165,14 @@ class VideoMotionMAE(nn.Module):
 
     # ----------------------------------- forward -----------------------------------
 
+    def low_rank_latent(self, gcls, frame_cls, T):
+        z_template = self.template_mlp(gcls).unsqueeze(1).expand(-1, T, -1)  # (B,T,Denc)
+        z_motion = self.motion_mlp(frame_cls)  # (B,T,motion_dim)
+        Q, _ = torch.linalg.qr(self.motion_basis)  # (Denc, motion_dim) -> orthonormal columns
+        delta_z = z_motion @ Q.T  # (B,T,Denc)
+        frame_z = z_template + delta_z  # (B,T,Denc)
+        return frame_z, z_motion
+
     def forward(
         self,
         video: torch.Tensor,                      # (B,T,C,H,W)
@@ -227,14 +235,7 @@ class VideoMotionMAE(nn.Module):
         frame_cls = enc_tokens[:, :, 0, :]  # (B,T,Denc)
 
         # --- (B) CLS -> frame decoding ---
-        z_template = self.template_mlp(gcls).unsqueeze(1).expand(-1, T, -1)  # (B,T,Denc)
-
-        z_motion = self.motion_mlp(frame_cls)  # (B,T,motion_dim)
-        Q, _ = torch.linalg.qr(self.motion_basis)  # (Denc, motion_dim) -> orthonormal columns
-        delta_z = z_motion @ Q.T  # (B,T,Denc)
-
-        frame_z = z_template + delta_z  # (B,T,Denc)
-
+        frame_z, z_motion = self.low_rank_latent(gcls, frame_cls, T)  # (B,T,Denc)
         pred_frames = self.frame_decoder(frame_z, H, W)  # (B,T,C,Hf,Wf)
 
         if pred_frames.shape[2] != C:
