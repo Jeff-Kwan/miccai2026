@@ -313,5 +313,5 @@ if __name__ == "__main__":
         video_backend=None,
         processes=48,
         chunksize=4,
-        shard_size=512,
+        shard_size=256,
     )
