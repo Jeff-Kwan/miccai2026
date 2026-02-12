@@ -311,7 +311,7 @@ if __name__ == "__main__":
         tracings_hw=(112, 112),
         overwrite=True,
         video_backend=None,
-        processes=32,
+        processes=48,
         chunksize=4,
-        shard_size=256,
+        shard_size=512,
     )
