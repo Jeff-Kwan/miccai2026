@@ -28,7 +28,7 @@ def pretrain_collate(
     if max_frames <= 0:
         raise ValueError(f"max_frames must be > 0, got {max_frames}")
 
-    vids, tss = [], []
+    vids, tss, augvs = [], [], []
 
     for s in batch:
         v = s["video"]         # [T,C,H,W]
@@ -108,20 +108,26 @@ def pretrain_collate(
         # shift timestamps to start at 0
         ts = ts - ts[0]
 
-        # Augmentations
-        if augmentations is not None:
-            v = augmentations(v)
-
         # Normalize [0, 1] to [-1, 1]
         v = v * 2 - 1
 
         vids.append(v)
         tss.append(ts)
 
-    return {
+        # Augmentations
+        if augmentations is not None:
+            aug_v = augmentations(v)
+            aug_v = aug_v * 2 - 1
+            augvs.append(aug_v)
+
+
+    out = {
         "video": torch.stack(vids, dim=0),       # [B,max_frames,C,H,W]
         "timestamps": torch.stack(tss, dim=0),   # [B,max_frames]
     }
+    if augmentations is not None:
+        out["aug_video"] = torch.stack(augvs, dim=0)  # [B,max_frames,C,H,W]
+    return out
 
 
 def EF_collate(batch: List[Dict[str, Any]],

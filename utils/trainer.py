@@ -157,9 +157,11 @@ class MAETrainer:
         pbar = tqdm(self.train_dl, desc=f"Epoch {epoch_idx+1}/{self.cfg.epochs}")
         for batch in pbar:
             videos = batch["video"].to(self.device, non_blocking=True)  # [B,T,C,H,W]
+            if self.augmentations:
+                aug_videos = batch["aug_video"].to(self.device, non_blocking=True)  # [B,T,C,H,W]
+            else:
+                aug_videos = videos
             timestamps = batch["timestamps"].to(self.device, non_blocking=True)
-            
-            aug_videos = self.augmentations(videos) if self.augmentations else videos
 
             self.optimizer.zero_grad(set_to_none=True)
             out = self._forward(aug_videos, timestamps, target=videos)    # Reconstruct original videos

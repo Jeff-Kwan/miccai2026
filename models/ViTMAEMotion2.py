@@ -295,7 +295,7 @@ class VideoMotionMAE(nn.Module):
         if return_pred:
             pred_masked_bt = pred_masked.view(BT, Nmask, patch_dim)
 
-            pred_full_bt = target_bt.clone()  # visible patches copied from input for visualization
+            pred_full_bt = target_bt.clone().to(pred_masked_bt.dtype)  # visible patches copied from input for visualization
             pred_full_bt.scatter_(
                 1,
                 mask_idx.unsqueeze(-1).expand(BT, Nmask, patch_dim),
@@ -326,7 +326,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     mae = mae.to(device)
 
-    B, T, C, H, W = 32, 64, 3, 112, 112
+    B, T, C, H, W = 64, 64, 3, 112, 112
     video = torch.randn(B, T, C, H, W, device=device)
 
     # Example timestamps: 0..T-1 for each sample (you can pass real timestamps here)
@@ -346,9 +346,10 @@ if __name__ == "__main__":
         record_shapes=True,
         with_flops=True,
     ) as prof:
-        out = mae(video, timestamps=timestamps, return_pred=True)
-        output = out["pred"]
-        loss = out["loss"]
+        with torch.autocast('cuda', torch.bfloat16):
+            out = mae(video, timestamps=timestamps, return_pred=True)
+            output = out["pred"]
+            loss = out["loss"]
         loss.backward()
 
     assert output.shape == video.shape, f"Expected output shape {video.shape}, got {output.shape}"
