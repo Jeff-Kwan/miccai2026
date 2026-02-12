@@ -1,5 +1,5 @@
 import torch 
-from datahandling.PreTrainEchoDynaDataset2 import load_echodyna_downstream_datasets
+from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
 from models.VideoViT2 import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
 from models.ViTMAEMotion2 import VideoMotionMAE, SimpleConvDecoder
 import os
@@ -27,7 +27,7 @@ mae.load_state_dict(torch.load(os.path.join(load_dir, "VMAE.pth"), map_location=
 mae = mae.to(device)
 mae.eval()
 
-train_ds, val_ds, test_ds = load_echodyna_downstream_datasets(allow_missing_masks=True)
+train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=False)
 
 
 idx = random.randint(0, len(val_ds) - 1)

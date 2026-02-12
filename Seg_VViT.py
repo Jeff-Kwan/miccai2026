@@ -13,7 +13,7 @@ from PIL import Image
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-from datahandling.PreTrainEchoDynaDataset import load_echodyna_downstream_datasets
+from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
 from models.VideoViT import VideoViTEncoder, VideoViTCfg  # encoder backbone
 
 
@@ -359,7 +359,7 @@ def write_results_txt(out_dir, model, model_size, train_params, comments, best_r
 # --------------------
 # Dataset + Dataloaders
 # --------------------
-train_ds, val_ds, test_ds = load_echodyna_downstream_datasets(allow_missing_masks=False)
+train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
 def collate_fn(batch, frames):
     # fixed clip length across batch

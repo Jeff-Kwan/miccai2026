@@ -1,7 +1,7 @@
 import torch 
 from torch import nn
 from torch.utils.data import DataLoader
-from datahandling.PreTrainEchoDynaDataset2 import load_echodyna_downstream_datasets
+from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
 from models.VideoViT2 import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
 from models.ViTMAEMotion2 import VideoMotionMAE, SimpleConvDecoder
 import os
@@ -43,7 +43,7 @@ def collate_fn(batch):
 
     return videos, timestamps, frames_idx
 
-train_ds, val_ds, test_ds = load_echodyna_downstream_datasets(allow_missing_masks=False)
+train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=False)
 train_dl = DataLoader(train_ds, batch_size=1, shuffle=True,
                       collate_fn=collate_fn,
                       num_workers=60, pin_memory=True, persistent_workers=True)

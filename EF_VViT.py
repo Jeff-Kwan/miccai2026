@@ -2,10 +2,11 @@ import torch
 from torch import dtype, nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from datahandling.PreTrainEchoDynaDataset2 import load_echodyna_downstream_datasets
+from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
 from models.VideoViT2 import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
 from models.ViTMAEMotion2 import VideoMotionMAE, SimpleConvDecoder
 from datahandling.collate import EF_collate
+from datahandling.augmentations.get_augmentations import get_pretrain_augmentations
 import os
 import matplotlib.pyplot as plt 
 from tqdm import tqdm
@@ -15,9 +16,9 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 load_dir = "results/2026_02_11/17_24_VMAE"
 
 max_frames = 64
-epochs = 1
+epochs = 100
 batch_size = 16
-lr = 3e-4
+lr = 2e-4
 weight_decay = 1e-3
 autocast = True
 config = json.load(open("config/VMAE.json", "r"))
@@ -63,13 +64,13 @@ mse = nn.MSELoss()
 l1 = nn.L1Loss()
 
 # Dataset
-train_ds, val_ds, test_ds = load_echodyna_downstream_datasets(allow_missing_masks=False)
+train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=False)
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                      collate_fn=lambda x: EF_collate(x, max_frames=max_frames, augmentations=None, generator=None),
-                      num_workers=60, pin_memory=True, persistent_workers=True)
-val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=32, pin_memory=True,
+                      collate_fn=lambda x: EF_collate(x, max_frames=max_frames, augmentations=get_pretrain_augmentations(), generator=None),
+                      num_workers=48, pin_memory=True, persistent_workers=True)
+val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=16, pin_memory=True,
                     collate_fn=lambda x: EF_collate(x, max_frames=max_frames, augmentations=None, generator=None))
-test_dl = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=32, pin_memory=True)
+test_dl = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=16, pin_memory=True)
 
 for epoch in range(epochs):
     probe.train(); probe.encoder.eval()  # freeze encoder
