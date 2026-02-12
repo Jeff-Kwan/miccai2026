@@ -15,7 +15,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 load_dir = "results/2026_02_11/17_24_VMAE"
 
 max_frames = 64
-epochs = 50
+epochs = 1
 batch_size = 16
 lr = 3e-4
 weight_decay = 1e-3
@@ -49,10 +49,10 @@ class EDESMLPProbe(nn.Module):
             N = (H // self.encoder.cfg.patch) * (W // self.encoder.cfg.patch)
             keep_idx = torch.arange(N, device=device)[None, None, :].expand(B, T, N)
             gcls, frames, hw = self.encoder(video, keep_idx=keep_idx, timestamps=timestamp)
-            fcls = frames[:, :, 0, :]
+            tokens = torch.cat([gcls.unsqueeze(1), frames[:, :, 0, :]], dim=1)
             
         # Attention Selection
-        features = self.attn_pool(gcls.unsqueeze(1), fcls, fcls)[0].squeeze(1)  # [B, D]
+        features = self.attn_pool(gcls.unsqueeze(1), tokens, tokens)[0].squeeze(1)  # [B, D]
         pred = self.fc(features)
         return pred.squeeze(-1)
 
@@ -117,7 +117,6 @@ with torch.no_grad():
         videos, ef, timestamps = batch["video"], batch["metadata"]["EF"], batch["timestamps"]
         videos, ef, timestamps = videos.to(device), ef.to(device), timestamps.to(device)
         pred_ef = probe(videos, timestamps)
-        ef = ef * 100.0  # Denormalize EF to original scale
         pred_ef = pred_ef * 100.0  # Denormalize EF to original scale
         loss = l1(pred_ef, ef)
         rmse = torch.sqrt(mse(pred_ef, ef))
