@@ -13,7 +13,7 @@ from tqdm import tqdm
 import json
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_11/17_24_VMAE"
+load_dir = "results/2026_02_12/16_08_VMAE"
 
 config = json.load(open("config/VMAE.json", "r"))
 enc = VideoViTEncoder(VideoViTCfg(**config["encoder"]))
@@ -34,7 +34,7 @@ def collate_fn(batch):
     # collect frame indices
     frames_idx = []
     for sample in batch:
-        fi = sample.get("frame_indices", None)
+        fi = sample["masks"]["frame_indices"]
         if fi is None:
             fi = torch.empty((0,), dtype=torch.long)
         else:
@@ -43,7 +43,7 @@ def collate_fn(batch):
 
     return videos, timestamps, frames_idx
 
-train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=False)
+train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 train_dl = DataLoader(train_ds, batch_size=1, shuffle=True,
                       collate_fn=collate_fn,
                       num_workers=60, pin_memory=True, persistent_workers=True)
