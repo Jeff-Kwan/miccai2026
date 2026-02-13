@@ -13,14 +13,17 @@ from tqdm import tqdm
 import json
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_11/17_24_VMAE"
+load_dir = "results/2026_02_12/16_08_VMAE"
+output_dir = os.path.join(load_dir, "EF_estimation")
+os.makedirs(output_dir, exist_ok=True)
 
 max_frames = 64
-epochs = 100
+epochs = 50
 batch_size = 16
 lr = 2e-4
 weight_decay = 1e-3
 autocast = True
+torch_compile = True
 config = json.load(open("config/VMAE.json", "r"))
 enc = VideoViTEncoder(VideoViTCfg(**config["encoder"]))
 dec = VideoViTDecoder(enc_dim=config["encoder"]["dim"], patch=config["encoder"]["patch"], 
@@ -30,9 +33,6 @@ mae = VideoMotionMAE(enc, dec, frame_dec, motion_dim=2, norm_pix_loss=False, mas
 mae.load_state_dict(torch.load(os.path.join(load_dir, "VMAE.pth"), map_location=device))
 mae = mae.to(device)
 mae.eval()
-
-for param in mae.parameters():
-    param.requires_grad = False
 
 class EDESMLPProbe(nn.Module):
     def __init__(self, latent_dim, mae):
@@ -44,30 +44,40 @@ class EDESMLPProbe(nn.Module):
             nn.Linear(latent_dim, 1))
         self.fc[1].bias.data.fill_(0.556)
 
-    def forward(self, video, timestamp):
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+
+    def forward(self, video, timestamp, autocast):
         with torch.no_grad():
-            B, T, C, H, W = video.shape
-            N = (H // self.encoder.cfg.patch) * (W // self.encoder.cfg.patch)
-            keep_idx = torch.arange(N, device=device)[None, None, :].expand(B, T, N)
-            gcls, frames, hw = self.encoder(video, keep_idx=keep_idx, timestamps=timestamp)
-            tokens = torch.cat([gcls.unsqueeze(1), frames[:, :, 0, :]], dim=1)
+            with torch.autocast('cuda', torch.bfloat16, enabled=autocast):
+                B, T, C, H, W = video.shape
+                N = (H // self.encoder.cfg.patch) * (W // self.encoder.cfg.patch)
+                keep_idx = torch.arange(N, device=device)[None, None, :].expand(B, T, N)
+                gcls, frames, hw = self.encoder(video, keep_idx=keep_idx, timestamps=timestamp)
+                gcls = gcls.unsqueeze(1)
+                # tokens = torch.cat([gcls, frames[:, :, 0, :]], dim=1)
+                fcls = frames[:, :, 0, :]
             
         # Attention Selection
-        features = self.attn_pool(gcls.unsqueeze(1), tokens, tokens)[0].squeeze(1)  # [B, D]
-        pred = self.fc(features)
+        gcls = gcls + self.attn_pool(gcls, fcls, fcls)[0]  # [B, 1, D]
+        pred = self.fc(gcls).squeeze(1)
         return pred.squeeze(-1)
 
 probe = EDESMLPProbe(latent_dim=384, mae=mae).to(device)
+print(f"Initialized EF Probe with {sum(p.numel() for p in probe.parameters() if p.requires_grad)/1e3:.2f}K trainable parameters.")
+if torch_compile:
+    probe = torch.compile(probe)
 optimizer = torch.optim.AdamW(probe.parameters(), lr=lr, weight_decay=weight_decay)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 mse = nn.MSELoss()
 l1 = nn.L1Loss()
+smoothl1 = nn.SmoothL1Loss(beta=0.05)
 
 # Dataset
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=False)
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                      collate_fn=lambda x: EF_collate(x, max_frames=max_frames, augmentations=get_pretrain_augmentations(), generator=None),
-                      num_workers=48, pin_memory=True, persistent_workers=True)
+                      collate_fn=lambda x: EF_collate(x, max_frames=max_frames, augmentations=None, generator=None),
+                      num_workers=24, pin_memory=True, persistent_workers=True)
 val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=16, pin_memory=True,
                     collate_fn=lambda x: EF_collate(x, max_frames=max_frames, augmentations=None, generator=None))
 test_dl = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=16, pin_memory=True)
@@ -80,9 +90,8 @@ for epoch in range(epochs):
         videos, ef, timestamps = batch["video"], batch["EF"], batch["timestamps"]
         videos, ef, timestamps = videos.to(device), ef.to(device), timestamps.to(device)
         optimizer.zero_grad()
-        with torch.autocast('cuda', torch.bfloat16, enabled=autocast):
-            pred_ef = probe(videos, timestamps)
-            loss = l1(pred_ef, ef)
+        pred_ef = probe(videos, timestamps, autocast=autocast)
+        loss = smoothl1(pred_ef, ef)
         loss.backward()
         norm = torch.nn.utils.clip_grad_norm_(probe.parameters(), max_norm=1.0)
         optimizer.step()
@@ -98,11 +107,10 @@ for epoch in range(epochs):
         for batch in val_dl:
             videos, ef, timestamps = batch["video"], batch["EF"], batch["timestamps"]
             videos, ef, timestamps = videos.to(device), ef.to(device), timestamps.to(device)
-            with torch.autocast('cuda', torch.bfloat16, enabled=autocast):
-                pred_ef = probe(videos, timestamps)
-                ef = ef * 100.0  # Denormalize EF to original scale
-                pred_ef = pred_ef * 100.0  # Denormalize EF to original scale
-                loss = l1(pred_ef, ef)
+            pred_ef = probe(videos, timestamps, autocast=autocast)
+            ef = ef * 100.0  # Denormalize EF to original scale
+            pred_ef = pred_ef * 100.0  # Denormalize EF to original scale
+            loss = l1(pred_ef, ef)
             rmse = torch.sqrt(mse(pred_ef, ef))
             val_loss += loss.item() * videos.size(0)
             val_rmse += rmse.item() * videos.size(0)
@@ -117,7 +125,7 @@ with torch.no_grad():
     for batch in tqdm(test_dl, desc="Testing"):
         videos, ef, timestamps = batch["video"], batch["metadata"]["EF"], batch["timestamps"]
         videos, ef, timestamps = videos.to(device), ef.to(device), timestamps.to(device)
-        pred_ef = probe(videos, timestamps)
+        pred_ef = probe(videos, timestamps, autocast=autocast)
         pred_ef = pred_ef * 100.0  # Denormalize EF to original scale
         loss = l1(pred_ef, ef)
         rmse = torch.sqrt(mse(pred_ef, ef))
@@ -129,7 +137,7 @@ with torch.no_grad():
 print(f"Test MAE Loss: {test_loss:.4f}, Test RMSE: {test_rmse:.4f}")
 
 # Save txt report
-with open(os.path.join(load_dir, "EF_estimation.txt"), "w") as f:
+with open(os.path.join(output_dir, "EF_estimation.txt"), "w") as f:
     f.write(f"Epochs: {epochs}\n")
     f.write(f"Batch Size: {batch_size}\n")
     f.write(f"Learning Rate: {lr}\n")
