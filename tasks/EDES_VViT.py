@@ -2,8 +2,8 @@ import torch
 from torch.utils.data import DataLoader
 from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
 from datahandling.collate import EDES_collate
-from models.VideoViT2 import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
-from models.ViTMAEMotion2 import VideoMotionMAE, SimpleConvDecoder
+from models.VideoViT import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
+from models.VMAE import VideoMotionMAE, SimpleConvDecoder
 import os
 from ref_utils.LMP.LMP_utils import compute_main_orientation_and_extrema
 import numpy as np

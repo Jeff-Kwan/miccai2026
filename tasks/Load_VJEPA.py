@@ -1,7 +1,7 @@
 import torch 
 from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
-from models.VideoViT2 import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
-from models.ViTMAEMotion2 import VideoMotionMAE, SimpleConvDecoder
+from models.VideoViT import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
+from models.VJEPA import VideoMotionJEPA, SimpleConvDecoder
 import os
 import random
 import matplotlib.pyplot as plt
@@ -12,20 +12,22 @@ import imageio
 import json
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_12/16_09_VMAE"
+load_dir = "results/2026_02_12/16_25_VJEPA"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
-autocast = False
+autocast = True
 
-config = json.load(open("config/VMAE.json", "r"))
+# ---- Model ----
+config = json.load(open("config/VJEPA.json", "r"))
 enc = VideoViTEncoder(VideoViTCfg(**config["encoder"]))
 dec = VideoViTDecoder(enc_dim=config["encoder"]["dim"], patch=config["encoder"]["patch"], 
-                      in_chans=config["encoder"]["in_chans"], cfg=VideoViTDecCfg(**config["decoder"]))
+                    in_chans=config["encoder"]["in_chans"], cfg=VideoViTDecCfg(**config["decoder"]))
 frame_dec = SimpleConvDecoder(latent=config["encoder"]["dim"], out_dim=config["encoder"]["in_chans"], base=config["decoder"]["dec_dim"])
-mae = VideoMotionMAE(enc, dec, frame_dec, motion_dim=2, norm_pix_loss=False, mask_ratio=0.75)
-mae.load_state_dict(torch.load(os.path.join(load_dir, "VMAE.pth"), map_location=device))
-mae = mae.to(device)
-mae.eval()
+jepa = VideoMotionJEPA(enc, dec, frame_dec, motion_dim=2, mask_ratio=0.75)
+jepa = jepa.to(device)
+jepa.load_state_dict(torch.load(os.path.join(load_dir, "VJEPA.pth"), map_location=device))
+jepa = jepa.to(device).eval()
+jepa.eval()
 
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
@@ -41,13 +43,13 @@ frames_idx = val_ds[idx]['masks']['frame_indices']
 B, T, C, H, W = video.shape
 with torch.inference_mode():
     with torch.autocast('cuda', torch.bfloat16, enabled=autocast):
-        N = (H // mae.encoder.cfg.patch) * (W // mae.encoder.cfg.patch)
+        N = (H // jepa.encoder.cfg.patch) * (W // jepa.encoder.cfg.patch)
         # No masking for encoder, keep all indices
         keep_idx = torch.arange(N, device=device)[None, None, :].expand(B, T, N)
-        gcls, enc_tokens, _ = mae.encoder(video, keep_idx=keep_idx, timestamps=timestamps)
+        gcls, enc_tokens, _ = jepa.encoder(video, keep_idx=keep_idx, timestamps=timestamps)
         frame_cls = enc_tokens[:, :, 0, :]
-        frame_z, z_motion = mae.low_rank_latent(gcls, frame_cls, T)
-        reconstruction = mae.frame_decoder(frame_z, H, W)
+        frame_z, z_motion = jepa.low_rank_latent(gcls, frame_cls, T)
+        reconstruction = jepa.frame_decoder(frame_z, H, W)
 
 
 # Get FPS from dataset metadata

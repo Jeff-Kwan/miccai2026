@@ -176,16 +176,15 @@ class MHSA(nn.Module):
 
 
 class MLP(nn.Module):
-    def __init__(self, dim: int, ratio: float, activation: nn.Module = nn.SiLU):
+    def __init__(self, dim: int, ratio: float, activation: nn.Module = nn.GELU):
         super().__init__()
         hid = int(dim * ratio)
-        self.fc1 = nn.Linear(dim, 2 * hid, bias=True)
+        self.fc1 = nn.Linear(dim, hid, bias=True)
         self.fc2 = nn.Linear(hid, dim, bias=True)
         self.activation = activation()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        a, b = self.fc1(x).chunk(2, dim=-1)
-        return self.fc2(self.activation(a) * b)
+        return self.fc2(self.activation(self.fc1(x)))
 
 
 class VideoBlock(nn.Module):
@@ -340,6 +339,7 @@ class VideoViTEncoder(nn.Module):
 @dataclass
 class VideoViTDecCfg:
     dec_dim: int = 512
+    dec_out: int = 192
     dec_depth: int = 8
     dec_heads: int = 16
     mlp_ratio: float = 4.0
@@ -362,7 +362,7 @@ class VideoViTDecoder(nn.Module):
             for _ in range(cfg.dec_depth)
         ])
         self.norm = nn.LayerNorm(cfg.dec_dim, eps=cfg.eps)
-        self.head = nn.Linear(cfg.dec_dim, patch * patch * in_chans, bias=True)
+        self.head = nn.Linear(cfg.dec_dim, cfg.dec_out, bias=True)
 
         self._init()
 
@@ -396,7 +396,6 @@ class VideoViTDecoder(nn.Module):
         enc_tokens: torch.Tensor,      # (B, T, 1+Nvis, Denc)
         keep_idx: torch.Tensor,        # (B, T, Nvis)
         hw: Tuple[int, int],
-        mask_token: torch.Tensor | None,      # (B, T, N, Ddec)
         timestamps: torch.Tensor,      # (B, T)
     ) -> torch.Tensor:
         B, T, Lvis, Denc = enc_tokens.shape
@@ -419,12 +418,7 @@ class VideoViTDecoder(nn.Module):
         vis = x[:, :, 1:, :]
         Ddec = vis.size(-1)
 
-        if mask_token is not None:
-            full = mask_token.to(dtype=work_dtype, device=work_dev).clone()
-        else:
-            full = self.mask_token.expand(B * T, N, -1).to(dtype=work_dtype, device=work_dev).clone()
-
-
+        full = self.mask_token.expand(B * T, N, -1).to(dtype=work_dtype, device=work_dev).clone()
         vis_bt = vis.reshape(B * T, Nvis, Ddec)
         keep_bt = keep_idx.reshape(B * T, Nvis)
         full.scatter_(1, keep_bt.unsqueeze(-1).expand(-1, -1, Ddec), vis_bt)
