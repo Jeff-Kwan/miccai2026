@@ -15,8 +15,8 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 load_dir = "results/2026_02_12/16_08_VMAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
+autocast = True
 
-max_frames = 99999
 config = json.load(open("config/VMAE.json", "r"))
 enc = VideoViTEncoder(VideoViTCfg(**config["encoder"]))
 dec = VideoViTDecoder(enc_dim=config["encoder"]["dim"], patch=config["encoder"]["patch"], 
@@ -36,56 +36,18 @@ video = video * 2 - 1  # [0,1] → [-1,1]
 timestamps = val_ds[idx]['timestamps'].unsqueeze(0).to(device)
 frames_idx = val_ds[idx]['masks']['frame_indices']
 
-def select_clip(video, timestamps, frames_idx, max_frames):
-    """
-    video: Tensor [1, T, C, H, W]
-    frames_idx: list[int]
-    """
-    T = video.size(1)
-    frames_idx = sorted(frames_idx)
-
-    # Already short enough
-    if T <= max_frames:
-        return video, timestamps, frames_idx, (0, T)
-
-    # No special frames → random crop
-    if len(frames_idx) == 0:
-        start = random.randint(0, T - max_frames)
-        end = start + max_frames
-        return video[:, start:end], timestamps[:, start:end], [], (start, end)
-
-    min_f, max_f = frames_idx[0], frames_idx[-1]
-    span = max_f - min_f + 1
-
-    # Case 1: all frames_idx can fit
-    if span <= max_frames:
-        start_min = max(0, max_f - max_frames + 1)
-        start_max = min(min_f, T - max_frames)
-        start = random.randint(start_min, start_max) if start_max >= start_min else start_min
-        end = start + max_frames
-
-        frames_idx_clip = [f - start for f in frames_idx if start <= f < end]
-        return video[:, start:end], timestamps[:, start:end], frames_idx_clip, (start, end)
-
-    # Case 2: can't fit all → pick ONE target frame
-    target = random.choice(frames_idx)
-
-    # center window around that frame
-    start = target - max_frames // 2
-    start = max(0, min(start, T - max_frames))
-    end = start + max_frames
-
-    frames_idx_clip = [f - start for f in frames_idx if start <= f < end]
-    return video[:, start:end], timestamps[:, start:end], frames_idx_clip, (start, end)
-
-video, timestamps, frames_idx, _ = select_clip(video, timestamps, frames_idx, max_frames)
 
 # Reconstruction
-_, C, T, H, W = video.shape
+B, T, C, H, W = video.shape
 with torch.inference_mode():
-    out = mae(video, timestamps, return_pred=True)
-    reconstruction = out["pred_frames"]     # [1, T, C, H, W]
-    z_motion = out["z_motion"].squeeze(0).cpu().numpy()  # [T, motion_dim]
+    with torch.autocast('cuda', torch.bfloat16, enabled=autocast):
+        N = (H // mae.encoder.cfg.patch) * (W // mae.encoder.cfg.patch)
+        # No masking for encoder, keep all indices
+        keep_idx = torch.arange(N, device=device)[None, None, :].expand(B, T, N)
+        gcls, enc_tokens, _ = mae.encoder(video, keep_idx=keep_idx, timestamps=timestamps)
+        frame_cls = enc_tokens[:, :, 0, :]
+        frame_z, z_motion = mae.low_rank_latent(gcls, frame_cls, T)
+        reconstruction = mae.frame_decoder(frame_z, H, W)
 
 
 # Get FPS from dataset metadata
@@ -100,6 +62,7 @@ reconstruction = (reconstruction/2 + 0.5).clip(0, 1) * 255
 
 video = video.cpu().numpy().astype(np.uint8)
 reconstruction = reconstruction.cpu().numpy().astype(np.uint8)
+z_motion = z_motion.squeeze(0).float().cpu().numpy()  # shape [T, motion_dim]
 
 T, H, W, C = video.shape
 frames = []
