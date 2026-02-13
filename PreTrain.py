@@ -18,16 +18,16 @@ output_dir = f"results/{date}/{timestamp}_VMAE"
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 300
-batch_size = 32
+epochs = 600
+batch_size = 64
 learning_rate = 2e-4
 weight_decay = 1e-2
 max_frames = 64
 
 torch.set_float32_matmul_precision('medium')
 autocast = True
-torch_compile = False
-workers = 64
+torch_compile = True
+workers = 32
 
 # Model
 config = json.load(open("config/VMAE.json", "r"))
@@ -46,7 +46,7 @@ aug = get_pretrain_augmentations()
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=False)
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers, 
     pin_memory=True, collate_fn=lambda x: pretrain_collate(x, max_frames=max_frames, augmentations=aug))
-val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=workers, 
+val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=workers//2, 
     pin_memory=True, collate_fn=lambda x: pretrain_collate(x, max_frames=max_frames, augmentations=None))
 
 # Trainer
@@ -67,7 +67,7 @@ trainer = MAETrainer(
     train_dl=train_dl,
     val_dl=val_dl,
     val_ds=val_ds,
-    augmentations=None,
+    augmentations=True,
     config=cfg,
 )
 

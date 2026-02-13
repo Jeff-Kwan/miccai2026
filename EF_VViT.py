@@ -22,8 +22,11 @@ epochs = 50
 batch_size = 16
 lr = 2e-4
 weight_decay = 1e-3
+dropout = 0.1
 autocast = True
 torch_compile = True
+torch.set_float32_matmul_precision('high')
+
 config = json.load(open("config/VMAE.json", "r"))
 enc = VideoViTEncoder(VideoViTCfg(**config["encoder"]))
 dec = VideoViTDecoder(enc_dim=config["encoder"]["dim"], patch=config["encoder"]["patch"], 
@@ -35,14 +38,16 @@ mae = mae.to(device)
 mae.eval()
 
 class EDESMLPProbe(nn.Module):
-    def __init__(self, latent_dim, mae):
+    def __init__(self, latent_dim, mae, dropout=0.1):
         super().__init__()
         self.encoder = mae.encoder
-        self.attn_pool = nn.MultiheadAttention(embed_dim=latent_dim, num_heads=6, batch_first=True)
+        self.query = nn.Parameter(torch.randn(1, 1, latent_dim) * 0.01)
+        self.attn_pool = nn.MultiheadAttention(embed_dim=latent_dim, num_heads=6, batch_first=True, dropout=dropout)
         self.fc = nn.Sequential(
             nn.LayerNorm(latent_dim),
+            nn.Dropout(dropout),
             nn.Linear(latent_dim, 1))
-        self.fc[1].bias.data.fill_(0.556)
+        self.fc[-1].bias.data.fill_(0.556)
 
         for param in self.encoder.parameters():
             param.requires_grad = False
@@ -53,17 +58,15 @@ class EDESMLPProbe(nn.Module):
                 B, T, C, H, W = video.shape
                 N = (H // self.encoder.cfg.patch) * (W // self.encoder.cfg.patch)
                 keep_idx = torch.arange(N, device=device)[None, None, :].expand(B, T, N)
-                gcls, frames, hw = self.encoder(video, keep_idx=keep_idx, timestamps=timestamp)
-                gcls = gcls.unsqueeze(1)
-                # tokens = torch.cat([gcls, frames[:, :, 0, :]], dim=1)
-                fcls = frames[:, :, 0, :]
+                gcls, frames, _ = self.encoder(video, keep_idx=keep_idx, timestamps=timestamp)
+                tokens = torch.cat([gcls.unsqueeze(1), frames[:, :, 0, :]], dim=1)
             
         # Attention Selection
-        gcls = gcls + self.attn_pool(gcls, fcls, fcls)[0]  # [B, 1, D]
-        pred = self.fc(gcls).squeeze(1)
+        features = self.attn_pool(self.query.repeat(B, 1, 1), tokens, tokens, need_weights=False)[0]  # [B, 1, D]
+        pred = self.fc(features).squeeze(1)
         return pred.squeeze(-1)
 
-probe = EDESMLPProbe(latent_dim=384, mae=mae).to(device)
+probe = EDESMLPProbe(latent_dim=384, mae=mae, dropout=dropout).to(device)
 print(f"Initialized EF Probe with {sum(p.numel() for p in probe.parameters() if p.requires_grad)/1e3:.2f}K trainable parameters.")
 if torch_compile:
     probe = torch.compile(probe)
@@ -120,6 +123,7 @@ for epoch in range(epochs):
     print(f"Epoch {epoch+1}/{epochs} - Train Loss: {train_loss:.4f} - Val MAE Loss: {val_loss:.4f}, Val RMSE: {val_rmse:.4f}")
 
 # Test on full videos
+probe.eval()
 test_loss = 0.0; test_rmse = 0.0
 with torch.no_grad():
     for batch in tqdm(test_dl, desc="Testing"):
