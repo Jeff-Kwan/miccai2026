@@ -134,7 +134,6 @@ class VideoJEPA(nn.Module):
         timestamps: torch.Tensor,                 # (B,T)
         target: torch.Tensor | None = None,       # Optional teacher target
         keep_idx: torch.Tensor | None = None,     # (B,T,Nvis)
-        mask_ratio: float | None = None,          # overrides self.mask_ratio if keep_idx is None
         return_debug: bool = False,
     ):
         B, T, C, H, W = video.shape
@@ -151,10 +150,9 @@ class VideoJEPA(nn.Module):
 
         # --- keep_idx / masking ---
         if keep_idx is None:
-            r = self.mask_ratio if mask_ratio is None else float(mask_ratio)
-            if not (0.0 < r < 1.0):
-                raise ValueError(f"mask_ratio must be in (0,1), got {r}")
-            Nvis = max(1, int(round(N * (1.0 - r))))
+            if not (0.0 < self.mask_ratio < 1.0):
+                raise ValueError(f"mask_ratio must be in (0,1), got {self.mask_ratio}")
+            Nvis = max(1, int(round(N * (1.0 - self.mask_ratio))))
             keep_idx = self._random_keep_idx(B, T, N, Nvis, video.device)
         else:
             if keep_idx.dim() != 3 or keep_idx.shape[:2] != (B, T):
