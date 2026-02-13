@@ -11,8 +11,8 @@ from tqdm import tqdm
 import json
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_12/16_08_VMAE"
-autocast = True
+load_dir = "results/2026_02_12/16_09_VMAE"
+autocast = False
 
 # ---- Model ----
 config = json.load(open("config/VMAE.json", "r"))

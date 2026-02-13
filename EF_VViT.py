@@ -11,19 +11,20 @@ import os
 import matplotlib.pyplot as plt 
 from tqdm import tqdm
 import json
+from math import log
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_12/16_08_VMAE"
+load_dir = "results/2026_02_12/16_09_VMAE"
 output_dir = os.path.join(load_dir, "EF_estimation")
 os.makedirs(output_dir, exist_ok=True)
 
-max_frames = 64
+max_frames = 32
 epochs = 50
 batch_size = 16
-lr = 2e-4
+lr = 1e-4
 weight_decay = 1e-3
 dropout = 0.1
-autocast = True
+autocast = False
 torch_compile = True
 torch.set_float32_matmul_precision('high')
 
@@ -42,7 +43,8 @@ class EDESMLPProbe(nn.Module):
         super().__init__()
         self.encoder = mae.encoder
         self.query = nn.Parameter(torch.randn(1, 1, latent_dim) * 0.01)
-        self.attn_pool = nn.MultiheadAttention(embed_dim=latent_dim, num_heads=6, batch_first=True, dropout=dropout)
+        self.qnorm = nn.LayerNorm(latent_dim)
+        self.attn_pool = nn.MultiheadAttention(embed_dim=latent_dim, num_heads=6, batch_first=True)
         self.fc = nn.Sequential(
             nn.LayerNorm(latent_dim),
             nn.Dropout(dropout),
@@ -62,7 +64,7 @@ class EDESMLPProbe(nn.Module):
                 tokens = torch.cat([gcls.unsqueeze(1), frames[:, :, 0, :]], dim=1)
             
         # Attention Selection
-        features = self.attn_pool(self.query.repeat(B, 1, 1), tokens, tokens, need_weights=False)[0]  # [B, 1, D]
+        features = self.attn_pool(self.qnorm(self.query).repeat(B, 1, 1)*(32/T)**0.5, tokens, tokens, need_weights=False)[0]  # [B, 1, D]
         pred = self.fc(features).squeeze(1)
         return pred.squeeze(-1)
 
@@ -74,16 +76,16 @@ optimizer = torch.optim.AdamW(probe.parameters(), lr=lr, weight_decay=weight_dec
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 mse = nn.MSELoss()
 l1 = nn.L1Loss()
-smoothl1 = nn.SmoothL1Loss(beta=0.05)
+smoothl1 = nn.SmoothL1Loss(beta=0.1)
 
 # Dataset
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=False)
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
-                      collate_fn=lambda x: EF_collate(x, max_frames=max_frames, augmentations=None, generator=None),
+                      collate_fn=lambda x: EF_collate(x, max_frames=max_frames, augmentations=get_pretrain_augmentations(), generator=None),
                       num_workers=24, pin_memory=True, persistent_workers=True)
 val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=16, pin_memory=True,
                     collate_fn=lambda x: EF_collate(x, max_frames=max_frames, augmentations=None, generator=None))
-test_dl = DataLoader(test_ds, batch_size=1, shuffle=False, num_workers=16, pin_memory=True)
+test_dl = DataLoader(test_ds, batch_size=1, shuffle=True, num_workers=16, pin_memory=True)
 
 for epoch in range(epochs):
     probe.train(); probe.encoder.eval()  # freeze encoder
@@ -114,13 +116,21 @@ for epoch in range(epochs):
             ef = ef * 100.0  # Denormalize EF to original scale
             pred_ef = pred_ef * 100.0  # Denormalize EF to original scale
             loss = l1(pred_ef, ef)
-            rmse = torch.sqrt(mse(pred_ef, ef))
+            rmse = mse(pred_ef, ef)
             val_loss += loss.item() * videos.size(0)
             val_rmse += rmse.item() * videos.size(0)
     val_loss /= len(val_dl.dataset)
     val_rmse /= len(val_dl.dataset)
+    val_rmse = val_rmse ** 0.5
 
     print(f"Epoch {epoch+1}/{epochs} - Train Loss: {train_loss:.4f} - Val MAE Loss: {val_loss:.4f}, Val RMSE: {val_rmse:.4f}")
+
+    if torch_compile:
+        torch.save(probe._orig_mod.state_dict(), os.path.join(output_dir, "EF_Probe.pth"))
+    else:
+        torch.save(probe.state_dict(), os.path.join(output_dir, "EF_Probe.pth"))
+
+probe.load_state_dict(torch.load(os.path.join(output_dir, "EF_Probe.pth"), map_location=device))
 
 # Test on full videos
 probe.eval()
@@ -132,13 +142,15 @@ with torch.no_grad():
         pred_ef = probe(videos, timestamps, autocast=autocast)
         pred_ef = pred_ef * 100.0  # Denormalize EF to original scale
         loss = l1(pred_ef, ef)
-        rmse = torch.sqrt(mse(pred_ef, ef))
+        rmse = mse(pred_ef, ef)
         test_loss += loss.item() * videos.size(0)
         test_rmse += rmse.item() * videos.size(0)
     test_loss /= len(test_dl.dataset)
     test_rmse /= len(test_dl.dataset)
+    test_rmse = test_rmse ** 0.5
 
 print(f"Test MAE Loss: {test_loss:.4f}, Test RMSE: {test_rmse:.4f}")
+
 
 # Save txt report
 with open(os.path.join(output_dir, "EF_estimation.txt"), "w") as f:

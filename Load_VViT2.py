@@ -12,10 +12,10 @@ import imageio
 import json
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_12/16_08_VMAE"
+load_dir = "results/2026_02_12/16_09_VMAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
-autocast = True
+autocast = False
 
 config = json.load(open("config/VMAE.json", "r"))
 enc = VideoViTEncoder(VideoViTCfg(**config["encoder"]))
