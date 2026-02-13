@@ -45,8 +45,10 @@ def main(paradigm: str, workers: int):
     from datahandling.collate import pretrain_collate
     aug = get_pretrain_augmentations()
     train_ds, _, _ = load_echonet_dynamic_datasets(get_mask=False)
-    train_dl = DataLoader(train_ds, batch_size=config["training"]["batch_size"], shuffle=True, num_workers=workers, 
-        pin_memory=True, collate_fn=lambda x: pretrain_collate(x, max_frames=config["training"]["max_frames"], augmentations=aug))
+    train_dl = DataLoader(train_ds, 
+        batch_size=config["training"]["batch_size"], shuffle=True, drop_last=True,
+        num_workers=workers, pin_memory=True, persistent_workers=True,
+        collate_fn=lambda x: pretrain_collate(x, max_frames=config["training"]["max_frames"], augmentations=aug))
 
     # Trainer
     from utils.pretrainer import PreTrainer, TrainerConfig
