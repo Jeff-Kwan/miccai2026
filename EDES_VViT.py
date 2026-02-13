@@ -1,6 +1,7 @@
 import torch
 from torch.utils.data import DataLoader
 from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
+from datahandling.collate import EDES_collate
 from models.VideoViT2 import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
 from models.ViTMAEMotion2 import VideoMotionMAE, SimpleConvDecoder
 import os
@@ -32,36 +33,20 @@ mae.load_state_dict(torch.load(os.path.join(load_dir, "VMAE.pth"), map_location=
 mae = mae.to(device).eval()
 
 # ---- Dataset ----
-def collate_fn(batch):
-    videos = torch.stack([sample["video"] for sample in batch], dim=0)          # [B,T,C,H,W]
-    timestamps = torch.stack([sample["timestamps"] for sample in batch], dim=0) # [B,T]
-
-    frames_idx = []; fps_list = []
-    for sample in batch:
-        fi = sample["masks"]["frame_indices"]
-        if fi is None:
-            fi = torch.empty((0,), dtype=torch.long)
-        else:
-            fi = fi.long()
-        frames_idx.append(fi)
-        fps_list.append(sample["metadata"]["FPS"])
-        
-    return videos, timestamps, frames_idx, fps_list
-
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
 train_dl = DataLoader(
     train_ds, batch_size=1, shuffle=True,
-    collate_fn=collate_fn, num_workers=32,
+    collate_fn=EDES_collate, num_workers=32,
     pin_memory=True, persistent_workers=True
 )
 val_dl = DataLoader(
     val_ds, batch_size=1, shuffle=True,
-    collate_fn=collate_fn, num_workers=32, pin_memory=True
+    collate_fn=EDES_collate, num_workers=32, pin_memory=True
 )
 test_dl = DataLoader(
     test_ds, batch_size=1, shuffle=False,
-    collate_fn=collate_fn, num_workers=32, pin_memory=True
+    collate_fn=EDES_collate, num_workers=32, pin_memory=True
 )
 
 def eval_split(dl, split_name: str, use_amp: bool = True):
@@ -74,7 +59,6 @@ def eval_split(dl, split_name: str, use_amp: bool = True):
             fps = float(fps[0])
             gt_es = int(gt_es.item())
             gt_ed = int(gt_ed.item())
-
             videos = videos.to(device, non_blocking=True)
             timestamps = timestamps.to(device, non_blocking=True)
 
