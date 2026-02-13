@@ -12,7 +12,7 @@ import imageio
 import json
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_11/17_24_VMAE"
+load_dir = "results/2026_02_12/16_08_VMAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -27,14 +27,14 @@ mae.load_state_dict(torch.load(os.path.join(load_dir, "VMAE.pth"), map_location=
 mae = mae.to(device)
 mae.eval()
 
-train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=False)
+train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
 
 idx = random.randint(0, len(val_ds) - 1)
 video = val_ds[idx]['video'].to(device).unsqueeze(0)
 video = video * 2 - 1  # [0,1] → [-1,1]
 timestamps = val_ds[idx]['timestamps'].unsqueeze(0).to(device)
-frames_idx = val_ds[idx]['frame_indices']
+frames_idx = val_ds[idx]['masks']['frame_indices']
 
 def select_clip(video, timestamps, frames_idx, max_frames):
     """
