@@ -300,8 +300,6 @@ class VideoViTEncoder(nn.Module):
         keep_idx = keep_idx.long()
         if keep_idx.numel() == 0:
             raise ValueError("keep_idx is empty")
-        if keep_idx.min() < 0 or keep_idx.max() >= N:
-            raise ValueError(f"keep_idx out of range: must be in [0,{N-1}]")
         return keep_idx
 
     def forward(
@@ -386,8 +384,6 @@ class VideoViTDecoder(nn.Module):
         keep_idx = keep_idx.long()
         if keep_idx.numel() == 0:
             raise ValueError("keep_idx is empty")
-        if keep_idx.min() < 0 or keep_idx.max() >= N:
-            raise ValueError(f"keep_idx out of range: must be in [0,{N-1}]")
         return keep_idx
 
     def forward(
