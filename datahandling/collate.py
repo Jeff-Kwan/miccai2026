@@ -147,3 +147,21 @@ def EF_collate(batch: List[Dict[str, Any]],
     ef = ef / 100.0  # Normalize EF to [0, 1]
     out["EF"] = ef
     return out
+
+
+def EDES_collate(batch):
+    videos = torch.stack([sample["video"] for sample in batch], dim=0)          # [B,T,C,H,W]
+    videos = videos * 2 - 1  # [0,1] → [-1,1]
+    timestamps = torch.stack([sample["timestamps"] for sample in batch], dim=0) # [B,T]
+
+    frames_idx = []; fps_list = []
+    for sample in batch:
+        fi = sample["masks"]["frame_indices"]
+        if fi is None:
+            fi = torch.empty((0,), dtype=torch.long)
+        else:
+            fi = fi.long()
+        frames_idx.append(fi)
+        fps_list.append(sample["metadata"]["FPS"])
+        
+    return videos, timestamps, frames_idx, fps_list
