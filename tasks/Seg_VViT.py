@@ -33,11 +33,11 @@ output_dir = os.path.join(load_dir, "LVSeg")
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 100
-batch_size = 16
-learning_rate = 2e-4
+epochs = 300
+batch_size = 32
+learning_rate = 1e-4
 weight_decay = 1e-3
-dropout = 0.0
+dropout = 0.1
 frames = config["training"]["max_frames"]
 torch.set_float32_matmul_precision('high')
 torch_compile = True

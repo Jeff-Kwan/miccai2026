@@ -20,11 +20,11 @@ os.makedirs(output_dir, exist_ok=True)
 
 config = json.load(open("config/VMAE.json", "r"))
 max_frames = config["training"]["max_frames"]
-epochs = 100
+epochs = 300
 batch_size = 32
-lr = 2e-4
+lr = 1e-4
 weight_decay = 1e-3
-dropout = 0.1
+dropout = 0.2
 torch_compile = True
 torch.set_float32_matmul_precision('high')
 
