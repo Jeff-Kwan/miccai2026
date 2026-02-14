@@ -276,3 +276,61 @@ def LV_collate(batch, max_frames: int, augmentations=None, generator=None):
     if augmentations is not None:
         out["aug_video"] = torch.stack(augvs, dim=0)   # [B,max_frames,C,H,W]
     return out
+
+
+
+def AE_collate(batch, max_frames, augmentations, generator=None):
+    n = max_frames // 2  # length for in_frames and out_frames
+
+    in_vids, out_vids = [], []
+    in_tss, out_tss = [], []
+
+    for s in batch:
+        v = s["video"]        # [T, C, H, W] in [0, 1]
+        ts = s["timestamps"]  # [T] in seconds
+        T = v.shape[0]
+        device = v.device
+
+        # Sample both independently (with replacement => stochastic overlap is common)
+        in_idx = torch.randint(0, T, (n,), device=device, generator=generator)
+        out_idx = torch.randint(0, T, (n,), device=device, generator=generator)
+
+        # Keep temporal order
+        in_idx, _ = torch.sort(in_idx)
+        out_idx, _ = torch.sort(out_idx)
+
+        # Guarantee in_idx covers the larger (or equal) interval span
+        if n >= 2:
+            in_span = (in_idx[-1] - in_idx[0]).item()
+            out_span = (out_idx[-1] - out_idx[0]).item()
+            if in_span < out_span:
+                in_idx, out_idx = out_idx, in_idx  # swap
+
+        # Gather frames/timestamps in sorted order
+        in_v = v.index_select(0, in_idx)
+        out_v = v.index_select(0, out_idx)
+        in_ts = ts.index_select(0, in_idx)
+        out_ts = ts.index_select(0, out_idx)
+
+        # Augmentations (only on in_frames)
+        if augmentations is not None:
+            in_v = augmentations(in_v)
+
+        in_vids.append(in_v)
+        out_vids.append(out_v)
+        in_tss.append(in_ts)
+        out_tss.append(out_ts)
+
+    # Stack
+    in_frames = torch.stack(in_vids, dim=0)        # [B, n, C, H, W]
+    out_frames = torch.stack(out_vids, dim=0)      # [B, n, C, H, W]
+    in_timestamps = torch.stack(in_tss, dim=0)     # [B, n]
+    out_timestamps = torch.stack(out_tss, dim=0)   # [B, n]
+
+    # Normalize to [-1, 1]
+    return {
+        "in_frames": in_frames * 2 - 1,
+        "out_frames": out_frames * 2 - 1,
+        "in_timestamps": in_timestamps,
+        "out_timestamps": out_timestamps,
+    }
