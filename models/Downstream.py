@@ -28,6 +28,6 @@ class EF_Probe(nn.Module):
                 tokens = torch.cat([gcls.unsqueeze(1), frames[:, :, 0, :]], dim=1)
             
         # Attention Selection
-        features = self.attn_pool(self.qnorm(self.query).repeat(B, 1, 1)*(32/T)**0.5, tokens, tokens, need_weights=False)[0]  # [B, 1, D]
+        features = self.attn_pool(self.qnorm(self.query).repeat(B, 1, 1), tokens, tokens, need_weights=False)[0]  # [B, 1, D]
         pred = self.fc(features).squeeze(1)
         return pred.squeeze(-1)

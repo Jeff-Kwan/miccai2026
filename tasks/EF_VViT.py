@@ -18,16 +18,16 @@ load_dir = "results/2026_02_13/16_24_VMAE"
 output_dir = os.path.join(load_dir, "EF_estimation")
 os.makedirs(output_dir, exist_ok=True)
 
-max_frames = 32
-epochs = 50
-batch_size = 16
-lr = 1e-4
+config = json.load(open("config/VMAE.json", "r"))
+max_frames = config["training"]["max_frames"]
+epochs = 200
+batch_size = 32
+lr = 2e-4
 weight_decay = 1e-3
 dropout = 0.1
 torch_compile = True
 torch.set_float32_matmul_precision('high')
 
-config = json.load(open("config/VMAE.json", "r"))
 enc = VideoViTEncoder(VideoViTCfg(**config["encoder"]))
 pretrained_dict = torch.load(os.path.join(load_dir, "VMAE.pth"), map_location=device)
 enc.load_state_dict({k.replace("encoder.", ""): v for k, v in pretrained_dict.items() if k.startswith("encoder.")})
@@ -96,9 +96,7 @@ for epoch in range(epochs):
     else:
         torch.save(probe.state_dict(), os.path.join(output_dir, "EF_Probe.pth"))
 
-probe.load_state_dict(torch.load(os.path.join(output_dir, "EF_Probe.pth"), map_location=device))
-
-# Test on full videos
+# Test
 probe.eval()
 test_loss = 0.0; test_rmse = 0.0
 with torch.no_grad():
