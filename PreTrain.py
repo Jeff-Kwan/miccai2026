@@ -77,6 +77,6 @@ def main(paradigm: str, workers: int):
 
 
 if __name__ == "__main__":
-    paradigm = 'jepa'  # or mae | jepa
+    paradigm = 'mae'  # or mae | jepa
     workers = 24
     main(paradigm=paradigm, workers=workers)

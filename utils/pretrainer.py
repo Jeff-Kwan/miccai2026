@@ -51,7 +51,7 @@ class PreTrainer:
     def _model_for_saving(self) -> nn.Module:
         return self.model._orig_mod if self.cfg.torch_compile else self.model
 
-    def _save_checkpoint(self, name: str = "VJEPA.pth"):
+    def _save_checkpoint(self, name: str):
         path = os.path.join(self.cfg.output_dir, name)
         torch.save(self._model_for_saving().state_dict(), path)
 
@@ -140,7 +140,7 @@ class PreTrainer:
 
             if self.cfg.save_every_epoch:
                 self._save_loss_plot()
-                self._save_checkpoint("VJEPA.pth")
+                self._save_checkpoint(f"V{self.paradigm.upper()}.pth")
 
         return {
             "train_total": self.train_losses,

@@ -1,20 +1,20 @@
+import os, sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import torch 
-from torch import dtype, nn
+from torch import nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
-from models.VideoViT import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
-from models.VMAE import VideoMAE, SimpleConvDecoder
+from models.VideoViT import VideoViTEncoder, VideoViTCfg
+from models.Downstream import EF_Probe
 from datahandling.collate import EF_collate
 from datahandling.augmentations.get_augmentations import get_pretrain_augmentations
-import os
 import matplotlib.pyplot as plt 
 from tqdm import tqdm
 import json
-from math import log
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_12/16_09_VMAE"
+load_dir = "results/2026_02_13/16_24_VMAE"
 output_dir = os.path.join(load_dir, "EF_estimation")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -24,54 +24,19 @@ batch_size = 16
 lr = 1e-4
 weight_decay = 1e-3
 dropout = 0.1
-autocast = False
 torch_compile = True
 torch.set_float32_matmul_precision('high')
 
 config = json.load(open("config/VMAE.json", "r"))
 enc = VideoViTEncoder(VideoViTCfg(**config["encoder"]))
-dec = VideoViTDecoder(enc_dim=config["encoder"]["dim"], patch=config["encoder"]["patch"], 
-                      in_chans=config["encoder"]["in_chans"], cfg=VideoViTDecCfg(**config["decoder"]))
-frame_dec = SimpleConvDecoder(latent=config["encoder"]["dim"], out_dim=config["encoder"]["in_chans"], base=config["decoder"]["dec_dim"])
-mae = VideoMotionMAE(enc, dec, frame_dec, motion_dim=2, norm_pix_loss=False, mask_ratio=0.75)
-mae.load_state_dict(torch.load(os.path.join(load_dir, "VMAE.pth"), map_location=device))
-mae = mae.to(device)
-mae.eval()
-
-class EDESMLPProbe(nn.Module):
-    def __init__(self, latent_dim, mae, dropout=0.1):
-        super().__init__()
-        self.encoder = mae.encoder
-        self.query = nn.Parameter(torch.randn(1, 1, latent_dim) * 0.01)
-        self.qnorm = nn.LayerNorm(latent_dim)
-        self.attn_pool = nn.MultiheadAttention(embed_dim=latent_dim, num_heads=6, batch_first=True)
-        self.fc = nn.Sequential(
-            nn.LayerNorm(latent_dim),
-            nn.Dropout(dropout),
-            nn.Linear(latent_dim, 1))
-        self.fc[-1].bias.data.fill_(0.556)
-
-        for param in self.encoder.parameters():
-            param.requires_grad = False
-
-    def forward(self, video, timestamp, autocast):
-        with torch.no_grad():
-            with torch.autocast('cuda', torch.bfloat16, enabled=autocast):
-                B, T, C, H, W = video.shape
-                N = (H // self.encoder.cfg.patch) * (W // self.encoder.cfg.patch)
-                keep_idx = torch.arange(N, device=device)[None, None, :].expand(B, T, N)
-                gcls, frames, _ = self.encoder(video, keep_idx=keep_idx, timestamps=timestamp)
-                tokens = torch.cat([gcls.unsqueeze(1), frames[:, :, 0, :]], dim=1)
-            
-        # Attention Selection
-        features = self.attn_pool(self.qnorm(self.query).repeat(B, 1, 1)*(32/T)**0.5, tokens, tokens, need_weights=False)[0]  # [B, 1, D]
-        pred = self.fc(features).squeeze(1)
-        return pred.squeeze(-1)
-
-probe = EDESMLPProbe(latent_dim=384, mae=mae, dropout=dropout).to(device)
+pretrained_dict = torch.load(os.path.join(load_dir, "VMAE.pth"), map_location=device)
+enc.load_state_dict({k.replace("encoder.", ""): v for k, v in pretrained_dict.items() if k.startswith("encoder.")})
+probe = EF_Probe(encoder=enc, dropout=dropout).to(device)
 print(f"Initialized EF Probe with {sum(p.numel() for p in probe.parameters() if p.requires_grad)/1e3:.2f}K trainable parameters.")
 if torch_compile:
     probe = torch.compile(probe)
+autocast = config["training"]["autocast"]
+
 optimizer = torch.optim.AdamW(probe.parameters(), lr=lr, weight_decay=weight_decay)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 mse = nn.MSELoss()
@@ -85,7 +50,8 @@ train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True,
                       num_workers=24, pin_memory=True, persistent_workers=True)
 val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=True, num_workers=16, pin_memory=True,
                     collate_fn=lambda x: EF_collate(x, max_frames=max_frames, augmentations=None, generator=None))
-test_dl = DataLoader(test_ds, batch_size=1, shuffle=True, num_workers=16, pin_memory=True)
+test_dl = DataLoader(test_ds, batch_size=batch_size, shuffle=True, num_workers=16, pin_memory=True,
+                    collate_fn=lambda x: EF_collate(x, max_frames=max_frames, augmentations=None, generator=None))
 
 for epoch in range(epochs):
     probe.train(); probe.encoder.eval()  # freeze encoder
