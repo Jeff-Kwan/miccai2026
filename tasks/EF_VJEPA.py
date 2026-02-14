@@ -14,11 +14,12 @@ from tqdm import tqdm
 import json
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_13/16_24_VJEPA"
+load_dir = "results/2026_02_13/18_16_VJEPA"
 output_dir = os.path.join(load_dir, "EF_estimation")
 os.makedirs(output_dir, exist_ok=True)
 
-max_frames = 32
+config = json.load(open("config/VJEPA.json", "r"))
+max_frames = config["training"]["max_frames"]
 epochs = 50
 batch_size = 16
 lr = 1e-4
@@ -27,7 +28,6 @@ dropout = 0.1
 torch_compile = True
 torch.set_float32_matmul_precision('high')
 
-config = json.load(open("config/VJEPA.json", "r"))
 enc = VideoViTEncoder(VideoViTCfg(**config["encoder"]))
 pretrained_dict = torch.load(os.path.join(load_dir, "VJEPA.pth"), map_location=device)
 enc.load_state_dict({k.replace("encoder.", ""): v for k, v in pretrained_dict.items() if k.startswith("encoder.")})
