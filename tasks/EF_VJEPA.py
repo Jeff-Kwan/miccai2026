@@ -20,9 +20,9 @@ os.makedirs(output_dir, exist_ok=True)
 
 config = json.load(open("config/VJEPA.json", "r"))
 max_frames = config["training"]["max_frames"]
-epochs = 50
-batch_size = 16
-lr = 1e-4
+epochs = 200
+batch_size = 32
+lr = 2e-4
 weight_decay = 1e-3
 dropout = 0.1
 torch_compile = True
@@ -96,9 +96,7 @@ for epoch in range(epochs):
     else:
         torch.save(probe.state_dict(), os.path.join(output_dir, "EF_Probe.pth"))
 
-probe.load_state_dict(torch.load(os.path.join(output_dir, "EF_Probe.pth"), map_location=device))
-
-# Test on full videos
+# Test
 probe.eval()
 test_loss = 0.0; test_rmse = 0.0
 with torch.no_grad():
