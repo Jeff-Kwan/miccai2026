@@ -26,7 +26,7 @@ class EF_Probe(nn.Module):
             keep_idx = torch.arange(N, device=video.device)[None, None, :].expand(B, T, N)
             gcls, frames, _ = self.encoder(video, keep_idx=keep_idx, timestamps=timestamp)
             
-        # Attention Selection
+        # Prediction mlp head
         pred = self.fc(gcls).squeeze(-1)  # [B,T]
         return pred
 
