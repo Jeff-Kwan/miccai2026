@@ -14,6 +14,8 @@ def main(paradigm: str, workers: int):
 
     # Model
     config = json.load(open(f"config/V{paradigm.upper()}.json", "r"))
+    with open(os.path.join(output_dir, "config.json"), "w") as f:
+        json.dump(config, f, indent=4)
 
     from models.VideoViT import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
     enc = VideoViTEncoder(VideoViTCfg(**config["encoder"]))
