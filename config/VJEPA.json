@@ -1,6 +1,6 @@
 {
     "training": {
-        "epochs": 700,
+        "epochs": 1000,
         "batch_size": 48,
         "learning_rate": 2e-4,
         "weight_decay": 1e-2,
