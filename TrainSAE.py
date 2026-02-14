@@ -130,7 +130,7 @@ for epoch in range(epochs):
 
     if save_every:
         save_loss_plot(train_losses, os.path.join(output_dir, "losses.png"))
-        save_checkpoint(model, os.path.join(output_dir, "SplineAutoEncoder.pth"))
+        save_checkpoint(model, os.path.join(output_dir, "SAE.pth"))
 
 history = {"train_total": train_losses}
 with open(os.path.join(output_dir, "history.json"), "w") as f:

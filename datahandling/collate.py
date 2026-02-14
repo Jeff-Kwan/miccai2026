@@ -280,6 +280,12 @@ def LV_collate(batch, max_frames: int, augmentations=None, generator=None):
 
 
 def AE_collate(batch, max_frames, augmentations, generator=None):
+    """
+    If T <= max_frames: original behavior (independent sampling; overlap allowed).
+    Else: sample max_frames unique frames, force temporal extremes into in_idx,
+          split remaining into out_idx and in_idx (no overlap), guaranteeing
+          interval(in_idx) ⊇ interval(out_idx) when n >= 2.
+    """
     n = max_frames // 2  # length for in_frames and out_frames
 
     in_vids, out_vids = [], []
@@ -291,22 +297,41 @@ def AE_collate(batch, max_frames, augmentations, generator=None):
         T = v.shape[0]
         device = v.device
 
-        # Sample both independently (with replacement => stochastic overlap is common)
-        in_idx = torch.randint(0, T, (n,), device=device, generator=generator)
-        out_idx = torch.randint(0, T, (n,), device=device, generator=generator)
+        if T <= max_frames:
+            # Original: independent sampling (overlap allowed)
+            in_idx = torch.randint(0, T, (n,), device=device, generator=generator)
+            out_idx = torch.randint(0, T, (n,), device=device, generator=generator)
 
-        # Keep temporal order
-        in_idx, _ = torch.sort(in_idx)
-        out_idx, _ = torch.sort(out_idx)
+            in_idx, _ = torch.sort(in_idx)
+            out_idx, _ = torch.sort(out_idx)
 
-        # Guarantee in_idx covers the larger (or equal) interval span
-        if n >= 2:
-            in_span = (in_idx[-1] - in_idx[0]).item()
-            out_span = (out_idx[-1] - out_idx[0]).item()
-            if in_span < out_span:
-                in_idx, out_idx = out_idx, in_idx  # swap
+            # Ensure in_idx interval span >= out_idx interval span
+            if n >= 2:
+                if (in_idx[-1] - in_idx[0]).item() < (out_idx[-1] - out_idx[0]).item():
+                    in_idx, out_idx = out_idx, in_idx
 
-        # Gather frames/timestamps in sorted order
+        else:
+            # No-overlap: sample a shared pool of size max_frames (unique)
+            pool = torch.randperm(T, device=device, generator=generator)[:max_frames]
+            pool, _ = torch.sort(pool)
+
+            # Force extremes into in_idx to guarantee interval containment
+            left = pool[:1]
+            right = pool[-1:]
+            middle = pool[1:-1]
+
+            # Split middle: (n-2) to in, n to out
+            perm = torch.randperm(middle.numel(), device=device, generator=generator)
+            need_in_mid = n - 2
+
+            in_mid = middle[perm[:need_in_mid]] if need_in_mid > 0 else middle[:0]
+            out_idx = middle[perm[need_in_mid:need_in_mid + n]]
+            in_idx = torch.cat([left, right, in_mid], dim=0)
+
+            in_idx, _ = torch.sort(in_idx)
+            out_idx, _ = torch.sort(out_idx)
+
+        # Gather frames/timestamps
         in_v = v.index_select(0, in_idx)
         out_v = v.index_select(0, out_idx)
         in_ts = ts.index_select(0, in_idx)
