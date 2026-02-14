@@ -20,7 +20,7 @@ os.makedirs(output_dir, exist_ok=True)
 
 config = json.load(open("config/VJEPA.json", "r"))
 max_frames = config["training"]["max_frames"]
-epochs = 200
+epochs = 100
 batch_size = 32
 lr = 2e-4
 weight_decay = 1e-3
@@ -37,7 +37,11 @@ if torch_compile:
     probe = torch.compile(probe)
 autocast = config["training"]["autocast"]
 
-optimizer = torch.optim.AdamW(probe.parameters(), lr=lr, weight_decay=weight_decay)
+enc = list(probe.encoder.parameters())
+optimizer = torch.optim.AdamW([
+    {"params": enc, "lr": lr/10, "weight_decay": weight_decay/10},
+    {"params": [p for p in probe.parameters() if id(p) not in {id(p) for p in enc}],
+     "lr": lr, "weight_decay": weight_decay}])
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 mse = nn.MSELoss()
 l1 = nn.L1Loss()

@@ -1,4 +1,5 @@
-import os
+import os, sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 import json
 import random
 from time import time
@@ -14,7 +15,10 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
-from models.VideoViT import VideoViTEncoder, VideoViTCfg  # encoder backbone
+from models.VideoViT import VideoViTEncoder, VideoViTCfg
+from models.Downstream import LV_Segmentation
+from datahandling.collate import LV_collate
+from datahandling.augmentations.get_augmentations import get_pretrain_augmentations
 
 
 # --------------------
@@ -22,183 +26,45 @@ from models.VideoViT import VideoViTEncoder, VideoViTCfg  # encoder backbone
 # --------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-load_dir = "results/2026_02_09/17_02_VMAE"  # <-- change to your VMAE pretrain run
-ckpt_name = "VMAE.pth"                      # <-- change if needed
+load_dir = "results/2026_02_13/16_24_VMAE"
+ckpt_name = "VMAE.pth"
+config = json.load(open("config/VMAE.json", "r"))
 output_dir = os.path.join(load_dir, "LVSeg")
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
 epochs = 100
 batch_size = 16
-learning_rate = 3e-4
-weight_decay = 1e-2
-frames = 32
+learning_rate = 2e-4
+weight_decay = 1e-3
+dropout = 0.0
+frames = config["training"]["max_frames"]
+torch.set_float32_matmul_precision('high')
+torch_compile = True
 
 train_params = {
     "epochs": epochs,
     "batch_size": batch_size,
     "learning_rate": learning_rate,
     "weight_decay": weight_decay,
+    "dropout": dropout,
     "frames": frames,
 }
 
 comments = [
-    "VideoViTEncoder backbone from VideoViTMAE pretraining",
-    "Seg head: conv -> upsample to pixel logits",
-    "Keyframe-supervised (two keyframes per video)",
+    ""
 ]
 
 
-# --------------------
-# Augmentations (expects [B,T,C,H,W], values in [-1,1])
-# --------------------
-class RandomGamma(nn.Module):
-    def __init__(self, gamma=(0.7, 1.5)):
-        super().__init__()
-        self.gamma = gamma
-
-    def forward(self, x):
-        x = (x + 1) * 0.5
-        g = torch.empty(1, device=x.device).uniform_(*self.gamma)
-        return (x.pow(g) * 2 - 1).clamp(-1.0, 1.0)
-
-class ClipBrightnessContrast(nn.Module):
-    def __init__(self, brightness=0.3, contrast=0.2):
-        super().__init__()
-        self.b = brightness
-        self.c = contrast
-
-    def forward(self, x):
-        b = torch.empty(1, device=x.device).uniform_(-self.b, self.b)
-        c = torch.empty(1, device=x.device).uniform_(1 - self.c, 1 + self.c)
-        mean = x.mean(dim=(-2, -1), keepdim=True)
-        return ((x - mean) * c + mean + b).clamp(-1.0, 1.0)
-
-class SpeckleNoise(nn.Module):
-    def __init__(self, std=(0.02, 0.1)):
-        super().__init__()
-        self.std = std
-
-    def forward(self, x):
-        x = (x + 1) * 0.5
-        std = torch.empty(1, device=x.device).uniform_(*self.std)
-        noise = torch.randn_like(x) * std
-        x = (x + x * noise).clamp(0.0, 1.0)
-        return x * 2 - 1
-
-augmentations = v2.Compose([
-    v2.RandomApply([
-        v2.RandomChoice([
-            v2.RandomChoice([
-                ClipBrightnessContrast(brightness=0.3, contrast=0.2),
-                RandomGamma(gamma=(0.7, 1.5)),
-            ]),
-            v2.RandomChoice([
-                v2.RandomAdjustSharpness(sharpness_factor=0.5, p=1),
-                v2.GaussianBlur(kernel_size=7, sigma=(0.25, 1.5)),
-            ]),
-            v2.RandomChoice([
-                v2.GaussianNoise(0, 0.05),
-                SpeckleNoise(std=(0.02, 0.1)),
-            ]),
-        ])
-    ], p=0.5),
-    v2.RandomApply([v2.RandomErasing(p=1)], p=0.3),
-])
-
-
-# --------------------
-# Model: VideoViT encoder + segmentation head
-# --------------------
-class VideoViTSegHead(nn.Module):
-    """
-    Uses VideoViTEncoder patch tokens (grid h x w) and upsamples to pixel logits.
-
-    Expects encoder to return enc_tokens shaped [B,T,N,D] where N=h*w.
-    Produces logits [B,T,1,H,W].
-    """
-    def __init__(self, encoder: nn.Module, patch: int, enc_dim: int):
-        super().__init__()
-        self.encoder = encoder
-        self.patch = int(patch)
-        self.enc_dim = int(enc_dim)
-
-        mid = max(64, enc_dim // 2)
-        self.fuse = nn.Sequential(
-            nn.Conv2d(enc_dim, enc_dim, 3, 1, 1),
-            nn.GELU(),
-            nn.Upsample(scale_factor=2, mode="nearest"),
-            nn.Conv2d(enc_dim, mid, 3, 1, 1),
-            nn.GELU(),
-            nn.Upsample(scale_factor=2, mode="nearest"),
-            nn.Conv2d(mid, mid//2, 3, 1, 1),
-            nn.GELU(),
-            nn.ConvTranspose2d(mid//2, 2, 2, 2, 0),
-            nn.Conv2d(2, 1, 1, 1, 0))
-        
-
-    @staticmethod
-    def _all_keep_idx(B: int, T: int, N: int, device) -> torch.Tensor:
-        base = torch.arange(N, device=device, dtype=torch.long)
-        return base.view(1, 1, N).expand(B, T, N).contiguous()
-
-    def forward(self, video: torch.Tensor) -> torch.Tensor:
-        # video: [B,T,C,H,W]
-        B, T, C, H, W = video.shape
-        if H % self.patch != 0 or W % self.patch != 0:
-            raise ValueError(f"H,W must be divisible by patch={self.patch}, got {(H,W)}")
-
-        h = H // self.patch
-        w = W // self.patch
-        N = h * w
-
-        keep_idx = self._all_keep_idx(B, T, N, video.device)
-
-        # encoder is assumed to accept keep_idx and return (gcls, enc_tokens, hw)
-        with torch.no_grad():
-            gcls, enc_tokens, hw_enc = self.encoder(video, keep_idx=keep_idx)
-
-        enc_tokens = enc_tokens[:, :, 1:, :]    # Remove CLS token
-        if hw_enc != (h, w):
-            raise ValueError(f"Encoder hw={hw_enc} != expected {(h,w)} from input {(H,W)} patch={self.patch}")
-
-        # enc_tokens: [B,T,N,D] -> [B*T, D, h, w]
-        if enc_tokens.dim() != 4 or enc_tokens.shape[:3] != (B, T, N):
-            raise RuntimeError(f"Unexpected enc_tokens shape {tuple(enc_tokens.shape)}; expected {(B,T,N,'D')}")
-
-        D = enc_tokens.size(-1)
-        x = enc_tokens.view(B * T, N, D).transpose(1, 2).contiguous()  # [BT,D,N]
-        x = x.view(B * T, D, h, w)                                     # [BT,D,h,w]
-        x = self.fuse(x)                                               # [BT,mid,h,w]
-        x = x.view(B, T, 1, H, W)
-        return x
-
-
-# Build encoder to match your pretrain config
-# (This should match how you built enc in your VMAE pretrain script.)
-enc_cfg = VideoViTCfg(dim=384, depth=8, heads=6, patch=8)
-encoder = VideoViTEncoder(enc_cfg)
-
-model = VideoViTSegHead(encoder=encoder, patch=enc_cfg.patch, enc_dim=enc_cfg.dim).to(device)
-
-# Load VMAE checkpoint (partial load is fine)
-ckpt_path = os.path.join(load_dir, ckpt_name)
-pretrained = torch.load(ckpt_path, map_location=device)
-
-model_dict = model.state_dict()
-matched = {k: v for k, v in pretrained.items() if k in model_dict and v.shape == model_dict[k].shape}
-model_dict.update(matched)
-missing, unexpected = model.load_state_dict(model_dict, strict=False)
-
-print(f"Loaded pretrained weights from: {ckpt_path}")
-print(f"Matched keys: {len(matched)} | Missing: {len(missing)} | Unexpected: {len(unexpected)}")
-
-# Freeze encoder if you want “linear probe / head-only” finetune.
-# If you want full finetune, comment these lines.
-model.encoder.requires_grad_(False)
-
+enc = VideoViTEncoder(VideoViTCfg(**config["encoder"]))
+pretrained_dict = torch.load(os.path.join(load_dir, "VMAE.pth"), map_location=device)
+enc.load_state_dict({k.replace("encoder.", ""): v for k, v in pretrained_dict.items() if k.startswith("encoder.")})
+model = LV_Segmentation(encoder=enc, dropout=dropout).to(device)
+print(f"Initialized LV Segmentation with {sum(p.numel() for p in model.parameters() if p.requires_grad)/1e3:.2f}K trainable parameters.")
 model_size = sum(p.numel() for p in model.parameters() if p.requires_grad)
-print(f"Initialized VideoViT-Seg with {model_size/1e6:.2f}M trainable parameters.")
+if torch_compile:
+    model = torch.compile(model)
+autocast = config["training"]["autocast"]
 
 optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
                               lr=learning_rate, weight_decay=weight_decay)
@@ -243,6 +109,7 @@ def calculate_metrics_from_logits(logits: torch.Tensor, masks: torch.Tensor):
 # --------------------
 # Plotting / Examples
 # --------------------
+# Bugged
 def save_examples_echo_dyna(model, val_ds, out_dir, results=5):
     results = min(results, len(val_ds))
     random_indices = random.sample(range(len(val_ds)), results)
@@ -254,22 +121,21 @@ def save_examples_echo_dyna(model, val_ds, out_dir, results=5):
     model.eval()
     for i, idx in enumerate(random_indices):
         item = val_ds[idx]
-        frames_idx = item["frame_indices"]   # 2 keyframes
-        masks = item["masks"]                # [2,H,W] (or tensor)
+        video = item["video"].unsqueeze(0).to(device)  # [1,T,C,H,W]
+        timestamps = item["timestamps"].unsqueeze(0).to(device)  # [1,T]
+        frames_idx = item["masks"]["frame_indices"]   # 2 keyframes
+        masks = item["masks"]["masks"]                # [2,H,W] (or tensor)
         frame = int(frames_idx[0])
 
         true_mask = masks[0]
         true_mask = true_mask if torch.is_tensor(true_mask) else torch.as_tensor(true_mask)
         true_mask = true_mask.float().cpu().numpy()
 
-        # single-frame clip with T=1 (still in [T,C,H,W] convention for model input)
-        # dataset video is [C,T,H,W] -> take one frame -> [C,H,W]
-        img = item["video"][:, frame].unsqueeze(0).unsqueeze(0)  # [1,1,C,H,W]
-        img = img.to(device)
-
         with torch.inference_mode():
-            logits = model(img)                 # [1,1,1,H,W]
-            pred = torch.sigmoid(logits)[0, 0, 0].cpu().numpy()
+            logits = model(video, timestamps, autocast=autocast)  # [1,1,H,W]
+            pred = torch.sigmoid(logits)[0, frame].cpu().numpy()  # [H,W], keyframe prediction
+            img = video[0, frame]  # [C,H,W]
+
 
         # display image
         img_np = img[0, 0].detach().cpu().numpy().transpose(1, 2, 0)
@@ -361,60 +227,14 @@ def write_results_txt(out_dir, model, model_size, train_params, comments, best_r
 # --------------------
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
-def collate_fn(batch, frames):
-    # fixed clip length across batch
-    L = min(min(int(x["video"].shape[1]) for x in batch), int(frames))
-    if L <= 0:
-        raise RuntimeError("Invalid clip length computed (L <= 0).")
-
-    kept = []  # (clip[T,C,H,W], mask[1,H,W], key_in_clip)
-    for b, x in enumerate(batch):
-        v = x["video"]  # [C,T,H,W]
-        if not x.get("has_masks", False):
-            raise RuntimeError("Segmentation collate_fn requires has_masks=True for all items.")
-
-        fi = torch.as_tensor(x["frame_indices"], dtype=torch.long, device=v.device)
-        m = x["masks"]
-        m = m if torch.is_tensor(m) else torch.as_tensor(m)
-        if fi.numel() != 2 or m.ndim != 3 or m.shape[0] != 2:
-            raise RuntimeError(f"Expected 2 keyframes and masks [2,H,W], got fi={fi.numel()} m={tuple(m.shape)} for item {b}.")
-
-        m = (m.to(v.device, non_blocking=True) > 0).float()  # [2,H,W]
-        T = v.shape[1]
-
-        for k in (0, 1):
-            f = int(fi[k])
-            if not (0 <= f < T):
-                raise RuntimeError(f"Keyframe {f} out of bounds for T={T} (item {b}).")
-
-            lo, hi = max(0, f - L + 1), min(f, T - L)
-            if lo > hi:
-                continue
-
-            s = int(torch.randint(lo, hi + 1, (1,), device=v.device))
-            clip = v[:, s:s + L]                    # [C,L,H,W]
-            clip = clip.permute(1, 0, 2, 3)         # [L,C,H,W] == [T,C,H,W]
-            mask = m[k].unsqueeze(0)                # [1,H,W]
-            kept.append((clip, mask, f - s))
-
-    if not kept:
-        raise RuntimeError(f"All samples were skipped (L={L}, frames={frames}).")
-
-    imgs, masks, keyframe_idx = zip(*kept)
-    imgs = torch.stack(imgs)                       # [2*B,T,C,H,W]
-    masks = torch.stack(masks)                     # [2*B,1,H,W]
-    keyframe_idx = torch.tensor(keyframe_idx, device=imgs.device, dtype=torch.long)
-
-    return {"imgs": imgs, "masks": masks, "keyframe_idx": keyframe_idx}
-
 def train_collate_fn(batch):
-    return collate_fn(batch, frames)
+    return LV_collate(batch, max_frames=frames, augmentations=get_pretrain_augmentations())
 
 def val_collate_fn(batch):
-    return collate_fn(batch, frames)
+    return LV_collate(batch, max_frames=frames)
 
 train_dl = DataLoader(train_ds, batch_size=batch_size, shuffle=True, collate_fn=train_collate_fn,
-                      num_workers=16, pin_memory=True)
+                      num_workers=24, pin_memory=True, persistent_workers=True)
 val_dl = DataLoader(val_ds, batch_size=batch_size, shuffle=False, collate_fn=val_collate_fn,
                     num_workers=16, pin_memory=True)
 test_dl = DataLoader(test_ds, batch_size=batch_size, shuffle=False, collate_fn=val_collate_fn,
@@ -476,10 +296,8 @@ focal_loss = FocalLoss()
 def gather_keyframe_logits(video_logits: torch.Tensor, key_idx: torch.Tensor) -> torch.Tensor:
     # video_logits: [B,T,1,H,W], key_idx: [B]
     B, T, C, H, W = video_logits.shape
-    if C != 1:
-        raise ValueError(f"Expected 1 channel logits, got C={C}")
-    out = torch.stack([video_logits[b, int(key_idx[b]), 0] for b in range(B)], dim=0)  # [B,H,W]
-    return out.unsqueeze(1)  # [B,1,H,W]
+    out = torch.stack([video_logits[b, key_idx[b], 0] for b in range(B)], dim=0)  # [B,H,W]
+    return out.unsqueeze(2)  # [B,2,1,H,W]
 
 
 # --------------------
@@ -492,15 +310,16 @@ def test_model(model, test_dl):
     num_images = 0
 
     for batch in tqdm(test_dl, desc="Testing"):
-        imgs = batch["imgs"].to(device, non_blocking=True)     # [B,T,C,H,W]
+        videos = batch["video"].to(device, non_blocking=True)          # [B,T,C,H,W]
+        timestamps = batch["timestamps"].to(device, non_blocking=True)  # [B
         masks = batch["masks"].to(device, non_blocking=True)   # [B,1,H,W]
-        idx = batch["keyframe_idx"].to(device)
+        idx = batch["frame_indices"].to(device)
 
-        logits_vid = model(imgs)                               # [B,T,1,H,W]
+        logits_vid = model(videos, timestamps, autocast=autocast)  # [B,T,1,H,W]
         logits = gather_keyframe_logits(logits_vid, idx)       # [B,1,H,W]
         batch_metrics = calculate_metrics_from_logits(logits, masks)
 
-        bs = imgs.size(0)
+        bs = videos.size(0)
         num_images += bs
         for k in metric_sums.keys():
             metric_sums[k] += batch_metrics[k] * bs
@@ -533,14 +352,14 @@ for epoch in range(epochs):
 
     p_bar = tqdm(train_dl, desc=f"Epoch {epoch+1}/{epochs}")
     for batch in p_bar:
-        imgs = batch["imgs"].to(device)      # [B,T,C,H,W]
+        video = batch["video"].to(device)      # [B,T,C,H,W]
+        timestamps = batch["timestamps"].to(device)  # [B,T]
         masks = batch["masks"].to(device)    # [B,1,H,W]
-        idx = batch["keyframe_idx"].to(device)
+        idx = batch["frame_indices"].to(device)
 
         optimizer.zero_grad(set_to_none=True)
 
-        imgs_aug = augmentations(imgs)
-        logits_vid = model(imgs_aug)                            # [B,T,1,H,W]
+        logits_vid = model(video, timestamps, autocast=autocast)  # [B,T,1,H,W]
         logits = gather_keyframe_logits(logits_vid, idx)         # [B,1,H,W]
 
         focal = focal_loss(logits, masks)
@@ -551,7 +370,7 @@ for epoch in range(epochs):
         norm = nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
-        bs = imgs.size(0)
+        bs = video.size(0)
         train_loss_sum += loss.item() * bs
         num_train_samples += bs
 
@@ -571,18 +390,19 @@ for epoch in range(epochs):
     with torch.inference_mode():
         p_bar = tqdm(val_dl, desc=f"Validation {epoch+1}/{epochs}")
         for batch in p_bar:
-            imgs = batch["imgs"].to(device)
+            video = batch["video"].to(device)
+            timestamps = batch["timestamps"].to(device)
             masks = batch["masks"].to(device)
-            idx = batch["keyframe_idx"].to(device)
+            idx = batch["frame_indices"].to(device)
 
-            logits_vid = model(imgs)
+            logits_vid = model(video, timestamps, autocast=autocast)  # [B,T,1,H,W]
             logits = gather_keyframe_logits(logits_vid, idx)
 
             focal = focal_loss(logits, masks)
             dloss = dice_loss(logits, masks)
             loss = focal + dloss
 
-            bs = imgs.size(0)
+            bs = video.size(0)
             val_loss_sum += loss.item() * bs
             num_val_samples += bs
 
@@ -638,7 +458,7 @@ for epoch in range(epochs):
         json.dump(results, f, indent=4)
 
     # ---- Plots + qualitative examples ----
-    save_examples_echo_dyna(model, val_ds, output_dir, results=5)
+    # save_examples_echo_dyna(model, val_ds, output_dir, results=5)
     plot_losses_and_dice(train_losses, val_losses, val_metrics["dice"], output_dir)
 
     # ---- results.txt ----
