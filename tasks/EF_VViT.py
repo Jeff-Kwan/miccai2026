@@ -101,9 +101,10 @@ probe.eval()
 test_loss = 0.0; test_rmse = 0.0
 with torch.no_grad():
     for batch in tqdm(test_dl, desc="Testing"):
-        videos, ef, timestamps = batch["video"], batch["metadata"]["EF"], batch["timestamps"]
+        videos, ef, timestamps = batch["video"], batch["EF"], batch["timestamps"]
         videos, ef, timestamps = videos.to(device), ef.to(device), timestamps.to(device)
         pred_ef = probe(videos, timestamps, autocast=autocast)
+        ef = ef * 100.0  # Denormalize EF to original scale
         pred_ef = pred_ef * 100.0  # Denormalize EF to original scale
         loss = l1(pred_ef, ef)
         rmse = mse(pred_ef, ef)
