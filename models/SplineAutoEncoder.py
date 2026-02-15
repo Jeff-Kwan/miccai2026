@@ -258,20 +258,11 @@ class SplineAutoEncoder(nn.Module):
         z_in: torch.Tensor,      # (B, T_in, latent)
         t_in: torch.Tensor,      # (B, T_in)
         t_out: torch.Tensor,     # (B, T_out)
-        *,
-        degree: int | None = None,
-        n_ctrl: int | None = None,
-        lam: float | None = None,
     ) -> torch.Tensor:
         """
         Fit spline to z_in over t_in and evaluate at t_out.
         Spline math always runs in fp32 regardless of autocast state.
         """
-
-        degree = self.degree if degree is None else degree
-        n_ctrl = self.n_ctrl if n_ctrl is None else n_ctrl
-        lam = self.lam if lam is None else lam
-
         orig_dtype = z_in.dtype
         device = z_in.device
 
@@ -281,20 +272,26 @@ class SplineAutoEncoder(nn.Module):
             t_in32 = t_in.float()
             t_out32 = t_out.float()
 
-            knots = self.make_clamped_uniform_knots(t_in32, degree, n_ctrl)
+            # Normalize time to [0, 1] for better conditioning (knots are in this range)
+            t0 = torch.cat([t_in32, t_out32], dim=1).min(dim=1, keepdim=True).values
+            t1 = torch.cat([t_in32, t_out32], dim=1).max(dim=1, keepdim=True).values
+            t_in32 = (t_in32 - t0) / (t1 - t0 + self.eps)
+            t_out32 = (t_out32 - t0) / (t1 - t0 + self.eps)
 
-            A  = self.bspline_basis(t_in32,  knots, degree, eps=self.eps)
-            Aq = self.bspline_basis(t_out32, knots, degree, eps=self.eps)
+            knots = self.make_clamped_uniform_knots(t_in32, self.degree, self.n_ctrl)
+
+            A  = self.bspline_basis(t_in32,  knots, self.degree, eps=self.eps)
+            Aq = self.bspline_basis(t_out32, knots, self.degree, eps=self.eps)
 
             At = A.transpose(1, 2)
             AtA = At @ A
             AtZ = At @ z_in32
 
             DtD = self.second_difference_gram(
-                n_ctrl, device=device, dtype=torch.float32
+                self.n_ctrl, device=device, dtype=torch.float32
             )
 
-            lhs = AtA + lam * DtD[None, :, :]
+            lhs = AtA + self.lam * DtD[None, :, :]
 
             P = torch.linalg.solve(lhs, AtZ)
 
@@ -308,10 +305,6 @@ class SplineAutoEncoder(nn.Module):
         in_frames: torch.Tensor,       # (B, T_in, C, H, W)
         in_timestamps: torch.Tensor,   # (B, T_in)
         out_timestamps: torch.Tensor,  # (B, T_out)
-        *,
-        degree: int | None = None,
-        n_ctrl: int | None = None,
-        lam: float | None = None,
     ):
         """
         Returns:
@@ -325,11 +318,7 @@ class SplineAutoEncoder(nn.Module):
         z_out = self.spline_fit_and_eval(
             z_in=z_in,
             t_in=in_timestamps,
-            t_out=out_timestamps,
-            degree=degree,
-            n_ctrl=n_ctrl,
-            lam=lam,
-        )
+            t_out=out_timestamps)
         recon_out = self.decode(z_out, H=H, W=W)
         return recon_out, z_in, z_out
 

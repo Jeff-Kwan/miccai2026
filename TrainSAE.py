@@ -46,14 +46,13 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision(config["training"].get("matmul_precision", "high"))
 
-mcfg = config["model"]
 model = SplineAutoEncoder(
-    latent=mcfg["latent"],
-    in_dim=mcfg.get("in_dim", 3),
-    out_dim=mcfg.get("out_dim", None),
+    latent=config["model"]["latent"],
+    in_dim=config["model"].get("in_dim", 3),
+    out_dim=config["model"].get("out_dim", None),
     n_ctrl=ceil(config["training"]["max_frames"]//3)+3,
-    degree=3,
-    lam=1e-3,
+    degree=config["model"]["degree"],
+    lam=config["model"]["degree"],
 ).to(device)
 
 if config["training"].get("compile", False):

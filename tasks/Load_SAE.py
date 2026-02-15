@@ -14,7 +14,7 @@ import json
 from math import ceil
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_14/17_24_SAE"
+load_dir = "results/2026_02_14/18_07_SAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -47,6 +47,7 @@ B, T, C, H, W = video.shape
 with torch.inference_mode():
     with torch.autocast('cuda', torch.bfloat16, enabled=autocast):
         z = model.encode(video)
+        z = model.spline_fit_and_eval(z, timestamps, timestamps)
         reconstruction = model.decode(z, H, W)
         z_motion = z - z.mean(dim=1, keepdim=True) # Remove static component
 
