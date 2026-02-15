@@ -49,16 +49,17 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
 )
 
 
-train_ds, val_ds, _ = load_echonet_dynamic_datasets(get_mask=False)
+train_ds, _, _ = load_echonet_dynamic_datasets(get_mask=False)
+
 train_dl = DataLoader(
     train_ds,
     batch_size=config["training"]["batch_size"],
     shuffle=True,
     drop_last=True,
-    num_workers=8,
+    num_workers=24,
     pin_memory=True,
     persistent_workers=True,
-    prefetch_factor=8,
+    prefetch_factor=2,
     collate_fn=lambda x: AE_collate(
         x,
         max_frames=config["training"]["max_frames"],
