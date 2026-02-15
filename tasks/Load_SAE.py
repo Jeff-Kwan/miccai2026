@@ -14,7 +14,7 @@ import json
 from math import ceil
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_15/06_51_SAE"
+load_dir = "results/2026_02_15/07_20_SAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -47,7 +47,7 @@ B, T, C, H, W = video.shape
 with torch.inference_mode():
     with torch.autocast('cuda', torch.bfloat16, enabled=autocast):
         z = model.encode(video)
-        z = model.spline_fit_and_eval(z, timestamps, timestamps)
+        # z = model.spline_fit_and_eval(z, timestamps, timestamps)
         reconstruction = model.decode(z, H, W)
         z_motion = z - z.mean(dim=1, keepdim=True) # Remove static component
 
@@ -65,13 +65,11 @@ video = video.cpu().numpy().astype(np.uint8)
 reconstruction = reconstruction.cpu().numpy().astype(np.uint8)
 z_motion = z_motion.squeeze(0).float().cpu().numpy()  # shape [T, latent]
 
-# Print effective dimension & participation ratio of z_motion
+# Print participation ratio of z_motion
 cov = np.cov(z_motion, rowvar=False)
 eigenvalues, eigenvectors = np.linalg.eigh(cov)
 total_variance = eigenvalues.sum()
-effective_dim = (total_variance ** 2) / (np.sum(eigenvalues ** 2) + 1e-10)
 participation_ratio = (eigenvalues.sum() ** 2) / (np.sum(eigenvalues ** 2) + 1e-10)
-print(f"Effective Dimension of z_motion: {effective_dim:.2f}")
 print(f"Participation Ratio of z_motion: {participation_ratio:.2f}")
 
 # PCA for top 2 components
