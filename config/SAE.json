@@ -5,7 +5,7 @@
         "learning_rate": 2e-4,
         "weight_decay": 1e-2,
         "max_frames": 64,
-        "autocast": true,
+        "autocast": false,
         "compile": true,
         "matmul_precision": "medium"
     },
@@ -14,6 +14,6 @@
         "in_dim": 3,
         "out_dim": 3,
         "degree": 3,
-        "lam": 0.1
+        "lam": 1.0
     }
 }

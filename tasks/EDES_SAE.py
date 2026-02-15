@@ -6,7 +6,6 @@ from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
 from datahandling.collate import EDES_collate
 from models.SplineAutoEncoder import SplineAutoEncoder
 import os
-# from ref_utils.LMP.LMP_utils import compute_main_orientation_and_extrema
 import numpy as np
 from tqdm import tqdm
 import json
@@ -67,17 +66,16 @@ def eval_split(dl, split_name: str, use_amp: bool = True):
             z = model.spline_fit_and_eval(z, timestamps, timestamps)
             z_motion = (z - z.mean(dim=1, keepdim=True)) # Remove static component
 
-            #  project to first 2 PC
-            # U, S, Vh = torch.linalg.svd(z_motion.squeeze(0), full_matrices=False)
-            # z_motion = U[:, :2] @ torch.diag(S[:2])
             z_motion = z_motion.float().squeeze().cpu().numpy()
 
-            group_ed, group_es, edpoint, espoint, traj, direction = \
-                compute_main_orientation_and_extrema(z_motion, fps)#, visualize=False)
+            group_ed, group_es, _, _, _, _ = compute_main_orientation_and_extrema(z_motion, fps)
+
+            # HOW do I know which is which??!
+            group = np.concatenate([group_ed, group_es])
 
             # Mean Absolute Error
-            ed_err = min(abs(edpt - gt_ed) for edpt in group_ed)
-            es_err = min(abs(espt - gt_es) for espt in group_es)
+            ed_err = min(abs(edpt - gt_ed) for edpt in group)
+            es_err = min(abs(espt - gt_es) for espt in group)
 
             ed_mae_list.append(ed_err)
             es_mae_list.append(es_err)
