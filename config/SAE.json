@@ -7,7 +7,7 @@
         "max_frames": 64,
         "autocast": false,
         "compile": true,
-        "matmul_precision": "medium"
+        "matmul_precision": "high"
     },
     "model": {
         "latent": 512,
