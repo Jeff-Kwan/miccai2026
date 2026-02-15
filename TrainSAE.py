@@ -77,10 +77,11 @@ train_dl = DataLoader(
     num_workers=24,
     pin_memory=True,
     persistent_workers=True,
+    prefetch_factor=4,
     collate_fn=lambda x: AE_collate(
         x,
         max_frames=config["training"]["max_frames"],
-        augmentations=get_pretrain_augmentations(),
+        augmentations=None,#get_pretrain_augmentations(),
     ),
 )
 
