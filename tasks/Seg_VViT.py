@@ -26,21 +26,21 @@ from datahandling.augmentations.get_augmentations import get_pretrain_augmentati
 # --------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-load_dir = "results/2026_02_13/16_24_VMAE"
+load_dir = "results/2026_02_14/17_21_VMAE"
 ckpt_name = "VMAE.pth"
 config = json.load(open("config/VMAE.json", "r"))
 output_dir = os.path.join(load_dir, "LVSeg")
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 300
+epochs = 100
 batch_size = 32
-learning_rate = 1e-4
+learning_rate = 2e-4
 weight_decay = 1e-3
 dropout = 0.1
 frames = config["training"]["max_frames"]
 torch.set_float32_matmul_precision('high')
-torch_compile = True
+torch_compile = False
 
 train_params = {
     "epochs": epochs,
@@ -66,8 +66,11 @@ if torch_compile:
     model = torch.compile(model)
 autocast = config["training"]["autocast"]
 
-optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad],
-                              lr=learning_rate, weight_decay=weight_decay)
+enc = list(model.encoder.parameters())
+optimizer = torch.optim.AdamW([
+    {"params": enc, "lr": learning_rate/4, "weight_decay": weight_decay/4},
+    {"params": [p for p in model.parameters() if id(p) not in {id(p) for p in enc}],
+     "lr": learning_rate, "weight_decay": weight_decay}])
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
 

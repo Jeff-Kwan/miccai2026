@@ -2,7 +2,7 @@ import subprocess
 import sys
 
 scripts = [
-    "tasks/EF_VViT.py",
+    # "tasks/EF_VViT.py",
     "tasks/Seg_VViT.py",
 ]
 

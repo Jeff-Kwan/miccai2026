@@ -2,20 +2,23 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .VideoViT import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
+from VideoViT import VideoViTEncoder, VideoViTDecoder
 
 
 class VideoMAE(nn.Module):
     """
-    Video MAE.
+    Video MAE (no global CLS).
+
     - keep_idx selects visible patches (constant Nvis across frames)
-    - encoder encodes only visible patches
-    - decoder reconstructs masked patches only
+    - encoder encodes only visible patches and returns:
+        frame_cls:    (B,T,D)
+        frame_tokens: (B,T,Nvis,D)
+    - decoder reconstructs masked patches only (B,T,Nmask,patch_dim)
     - loss computed on masked patches only
 
-    NOTE (w/ new temporal RoPE):
-      - encoder.forward now requires timestamps: (B,T)
-      - decoder.forward now requires timestamps: (B,T)
+    NOTE (w/ temporal RoPE):
+      - encoder.forward requires timestamps: (B,T)
+      - decoder.forward requires timestamps: (B,T)
     """
     def __init__(
         self,
@@ -23,17 +26,16 @@ class VideoMAE(nn.Module):
         decoder: VideoViTDecoder,
         *,
         norm_pix_loss: bool = False,
-        loss_type: str = "mse",                  # "mse" | "l1" | "smooth_l1"
-        mask_ratio: float = 0.75,                # used only if keep_idx not provided
+        loss_type: str = "mse",     # "mse" | "l1" | "smooth_l1"
+        mask_ratio: float = 0.75,   # used only if keep_idx not provided
     ):
         super().__init__()
         self.encoder = encoder
         self.decoder = decoder
 
-        self.norm_pix_loss = norm_pix_loss
+        self.norm_pix_loss = bool(norm_pix_loss)
         self.loss_type = loss_type
         self.mask_ratio = float(mask_ratio)
-        self.loss_type = loss_type
 
         # Convenience: pull patch/in_chans from decoder if present
         self.patch = getattr(decoder, "patch", None)
@@ -73,11 +75,11 @@ class VideoMAE(nn.Module):
         keep_bt: (BT,Nvis)
         Returns mask_idx: (BT,Nmask) indices of masked patches in ascending order.
         """
-        BT, Nvis = keep_bt.shape
+        BT, _ = keep_bt.shape
         keep_bool = torch.zeros(BT, N, device=keep_bt.device, dtype=torch.bool)
         keep_bool.scatter_(1, keep_bt, True)
         mask_idx = (~keep_bool).nonzero(as_tuple=False)[:, 1]
-        return mask_idx.view(BT, N - Nvis)
+        return mask_idx.view(BT, N - keep_bt.size(1))
 
     @staticmethod
     def _gather_bt(x_bt: torch.Tensor, idx_bt: torch.Tensor) -> torch.Tensor:
@@ -93,12 +95,11 @@ class VideoMAE(nn.Module):
     def _loss(self, pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         if self.loss_type == "mse":
             return F.mse_loss(pred, target, reduction="mean")
-        elif self.loss_type == "l1":
+        if self.loss_type == "l1":
             return F.l1_loss(pred, target, reduction="mean")
-        elif self.loss_type == "smooth_l1":
+        if self.loss_type == "smooth_l1":
             return F.smooth_l1_loss(pred, target, reduction="mean")
-        else:
-            raise ValueError(f"loss_type must be mse|l1|smooth_l1, got {self.loss_type}")
+        raise ValueError(f"loss_type must be mse|l1|smooth_l1, got {self.loss_type}")
 
     # ----------------------------------- forward -----------------------------------
 
@@ -106,7 +107,7 @@ class VideoMAE(nn.Module):
         self,
         video: torch.Tensor,                      # (B,T,C,H,W)
         timestamps: torch.Tensor,                 # (B,T) REQUIRED for temporal RoPE
-        target: torch.Tensor | None = None,       # (B,T,C,H,W) optional target for frame loss
+        target: torch.Tensor | None = None,       # (B,T,C,H,W) optional target for patch loss
         *,
         keep_idx: torch.Tensor | None = None,     # (B,T,Nvis)
         mask_ratio: float | None = None,          # overrides self.mask_ratio if keep_idx is None
@@ -125,9 +126,9 @@ class VideoMAE(nn.Module):
 
         # --- targets for MAE patch loss ---
         if target is None:
-            target_full, hw = self._patchify(video, self.patch)  # (B,T,N,patch_dim)
+            target_full, hw = self._patchify(video, self.patch)   # (B,T,N,patch_dim)
         else:
-            target_full, hw = self._patchify(target, self.patch)  # (B,T,N,patch_dim)
+            target_full, hw = self._patchify(target, self.patch)
 
         h, w = hw
         N = target_full.size(2)
@@ -146,28 +147,28 @@ class VideoMAE(nn.Module):
             keep_idx = keep_idx.to(device=video.device, dtype=torch.long)
             Nvis = keep_idx.size(2)
 
-        # --- encoder (Requires timestamps) ---
-        gcls, enc_tokens, hw_enc = self.encoder(video, keep_idx=keep_idx, timestamps=timestamps)
+        # --- encoder (no gcls) ---
+        frame_cls, frame_tokens, hw_enc = self.encoder(video, keep_idx=keep_idx, timestamps=timestamps)
         if hw_enc != hw:
             raise ValueError(f"Encoder hw={hw_enc} != patchify hw={hw}")
 
-        # --- (A) MAE masked-patch decoding ---
+        # --- decode masked patches only ---
         pred_masked = self.decoder(
-            gcls,
-            enc_tokens,
+            frame_cls=frame_cls,
+            frame_tokens=frame_tokens,
             keep_idx=keep_idx,
             hw=hw,
-            timestamps=timestamps,
         )  # (B,T,Nmask,patch_dim)
 
+        # --- build masked targets in the same order as decoder ---
         Nmask = N - Nvis
         BT = B * T
+
         target_bt = target_full.view(BT, N, patch_dim)
         keep_bt = keep_idx.view(BT, Nvis)
 
-        # gather masked targets in the same order decoder uses
-        mask_idx = self._masked_idx_sorted(N, keep_bt)             # (BT,Nmask)
-        target_masked_bt = self._gather_bt(target_bt, mask_idx)    # (BT,Nmask,patch_dim)
+        mask_idx = self._masked_idx_sorted(N, keep_bt)            # (BT,Nmask)
+        target_masked_bt = self._gather_bt(target_bt, mask_idx)   # (BT,Nmask,patch_dim)
         target_masked = target_masked_bt.view(B, T, Nmask, patch_dim)
 
         if self.norm_pix_loss:
@@ -177,15 +178,13 @@ class VideoMAE(nn.Module):
 
         loss = self._loss(pred_masked, target_masked)
 
-        out = {
-            "loss": loss,
-        }
+        out = {"loss": loss}
 
-        # Optional: return patch-assembled reconstruction
+        # Optional: return patch-assembled reconstruction (visible patches copied from target_full for viz)
         if return_pred:
             pred_masked_bt = pred_masked.view(BT, Nmask, patch_dim)
 
-            pred_full_bt = target_bt.clone().to(pred_masked_bt.dtype)  # visible patches copied from input for visualization
+            pred_full_bt = target_bt.clone().to(pred_masked_bt.dtype)
             pred_full_bt.scatter_(
                 1,
                 mask_idx.unsqueeze(-1).expand(BT, Nmask, patch_dim),
@@ -205,6 +204,7 @@ class VideoMAE(nn.Module):
 # ----------------------------- example -----------------------------
 if __name__ == "__main__":
     import json
+    from VideoViT import VideoViTEncoder, VideoViTDecoder, VideoViTCfg, VideoViTDecCfg
     config = json.load(open("config/VMAE.json", "r"))
     enc = VideoViTEncoder(VideoViTCfg(**config["encoder"]))
     dec = VideoViTDecoder(enc_dim=config["encoder"]["dim"], patch=config["encoder"]["patch"], 

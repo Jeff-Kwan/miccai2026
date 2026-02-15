@@ -14,15 +14,15 @@ from tqdm import tqdm
 import json
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_13/16_24_VMAE"
+load_dir = "results/2026_02_14/17_21_VMAE"
 output_dir = os.path.join(load_dir, "EF_estimation")
 os.makedirs(output_dir, exist_ok=True)
 
 config = json.load(open("config/VMAE.json", "r"))
 max_frames = config["training"]["max_frames"]
-epochs = 300
+epochs = 100
 batch_size = 32
-lr = 1e-4
+lr = 2e-4
 weight_decay = 1e-3
 dropout = 0.2
 torch_compile = True
