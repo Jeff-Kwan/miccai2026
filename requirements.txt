@@ -9,3 +9,5 @@ imageio
 scipy
 scikit-learn
 scikit-image
+ripser
+persim
