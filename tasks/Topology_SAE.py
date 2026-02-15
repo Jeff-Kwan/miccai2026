@@ -8,17 +8,16 @@ import torch
 from models.SplineAutoEncoder import SplineAutoEncoder
 from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
 import os
-import random
 import matplotlib.pyplot as plt
 import numpy as np
 import json
 from math import ceil
-from ripser import ripser
 from persim import plot_diagrams
 from sklearn.decomposition import PCA
+from utils.find_loop import compute_circular_coordinate_largest_h1, segment_periods, plot_theta_and_cycles, plot_pointcloud_with_period_loops
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_15/07_33_SAE"
+load_dir = "results/2026_02_15/08_39_SAE"
 ph_dir = os.path.join(load_dir, "persistent_homology")
 os.makedirs(ph_dir, exist_ok=True)
 
@@ -39,13 +38,13 @@ autocast = config["training"].get("autocast", False)
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
 
-idx = random.randint(0, len(val_ds) - 1)
+idx = 1196#random.randint(0, len(val_ds) - 1)
 video = val_ds[idx]['video'].to(device).unsqueeze(0)
 video = video * 2 - 1  # [0,1] → [-1,1]
 timestamps = val_ds[idx]['timestamps'].unsqueeze(0).to(device)
 frames_idx = val_ds[idx]['masks']['frame_indices']
 t0 = timestamps.min(); t1 = timestamps.max()    # 100 fps
-t_dense = torch.linspace(t0, t1, steps=int(100*(t1-t0)), device=device).unsqueeze(0)    
+t_dense = torch.linspace(t0, t1, steps=int(200*(t1-t0)), device=device).unsqueeze(0)    
 
 
 # Reconstruction
@@ -63,21 +62,20 @@ Z_np = z[0].detach().float().cpu().numpy()            # [T, D]
 Z_np = Z_np - Z_np.mean(axis=0, keepdims=True)
 
 # PCA and keep top k components
-pca = PCA(n_components=0.95, svd_solver='full')
-Z_np = pca.fit_transform(Z_np)  # [T, k]
-print(f"Original latent dim: {z.shape[2]}, after PCA (95% variance): {Z_np.shape[1]}")
+# pca = PCA(n_components=0.95, svd_solver='full')
+# Z_np = pca.fit_transform(Z_np)  # [T, k]
+# print(f"Original latent dim: {z.shape[2]}, after PCA (95% variance): {Z_np.shape[1]}")
 
 # ---- Run Ripser on the point cloud ----
 # maxdim=2 gives H0/H1/H2.
-res = ripser(Z_np, maxdim=2)
-dgms = res["dgms"]  # Raw diagrams
+dgms, theta01_s, theta_turns, cycle_ids, periods, diagnostics = compute_circular_coordinate_largest_h1(Z_np, n_landmarks=200)
 
 # ---- Plot persistence diagrams ----
 fig = plt.figure(figsize=(6, 6))
 plot_diagrams(dgms, show=False)
-plt.title("Persistence diagrams (Ripser)")
+plt.title("Persistence diagrams")
 plt.tight_layout()
-plt.savefig(os.path.join(ph_dir, "persistence_diagrams.png"))
+plt.savefig(os.path.join(ph_dir, f"{idx}-persistence_diagrams.png"))
 plt.close(fig)
 
 # ---- Quick quantitative summary (largest H1 persistence) ----
@@ -107,7 +105,13 @@ summary = {
     "H2_top_persistences": top_persistences(H2, k=10),
 }
 
-with open(os.path.join(ph_dir, "summary.json"), "w") as f:
+with open(os.path.join(ph_dir, f"{idx}-summary.json"), "w") as f:
     json.dump(summary, f, indent=2)
 
 print("PH summary:", summary)
+
+cycle_ids, periods, boundaries = segment_periods(theta_turns, min_points_per_period=20)
+
+print(f"Detected {len(periods)} periods (cycles).")
+for i, index in enumerate(periods):
+    print(f"  Period {i}: t in [{index.min()}, {index.max()}], points={len(index)}")

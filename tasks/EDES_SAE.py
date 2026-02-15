@@ -13,7 +13,7 @@ from math import ceil
 from utils.find_extrema import compute_main_orientation_and_extrema
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_15/07_20_SAE"
+load_dir = "results/2026_02_15/08_39_SAE"
 autocast = False
 
 # ---- Model ----
@@ -56,7 +56,7 @@ def eval_split(dl, split_name: str, use_amp: bool = True):
             gt_ed = int(gt_ed.item())
             videos = videos.to(device, non_blocking=True)
             timestamps = timestamps.to(device, non_blocking=True)
-
+            
             with torch.autocast('cuda', torch.bfloat16, enabled=use_amp):
                 z = model.encode(videos)
             z = model.spline_fit_and_eval(z, timestamps, timestamps)

@@ -14,7 +14,7 @@ import json
 from math import ceil
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_15/07_20_SAE"
+load_dir = "results/2026_02_15/08_39_SAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -106,15 +106,13 @@ gif_path = os.path.join(output_dir, f"{idx}-reconstruction.gif")
 imageio.mimsave(gif_path, frames, duration=duration)
 
 
-def plot_colormap_trajectory(x, y, title, xlabel, ylabel, save_path, frames_idx,
+def plot_colormap_trajectory(x, y, t, title, xlabel, ylabel, save_path, frames_idx,
                              cmap="coolwarm"):
     """
     x, y: arrays of shape (T,)
     """
     points = np.array([x, y]).T.reshape(-1, 1, 2)
     segments = np.concatenate([points[:-1], points[1:]], axis=1)
-
-    t = np.linspace(0, 1, len(x))  # normalized time
 
     lc = LineCollection(segments, cmap=cmap)
     lc.set_array(t)
@@ -176,6 +174,7 @@ def plot_colormap_trajectory(x, y, title, xlabel, ylabel, save_path, frames_idx,
 plot_colormap_trajectory(
     z_motion[:, 0],
     z_motion[:, 1],
+    timestamps.squeeze().cpu().numpy(),
     title="z_motion Trajectory",
     xlabel="D1",
     ylabel="D2",
