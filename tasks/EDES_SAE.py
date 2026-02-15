@@ -13,7 +13,7 @@ from math import ceil
 from utils.find_extrema import compute_main_orientation_and_extrema
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_15/08_39_SAE"
+load_dir = "results/2026_02_15/12_57_SAE"
 autocast = False
 
 # ---- Model ----

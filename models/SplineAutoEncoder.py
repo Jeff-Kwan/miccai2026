@@ -184,53 +184,46 @@ class SplineAutoEncoder(nn.Module):
         return torch.cat([left, interior, right], dim=1)
 
     @staticmethod
-    def bspline_basis(
-        t: torch.Tensor,
-        knots: torch.Tensor,
-        degree: int,
-        eps: float = 1e-12,
-    ) -> torch.Tensor:
-        """
-        Cox–de Boor recursion (batched).
-        t:     (B, T)
-        knots: (B, K)
-        returns: (B, T, n_ctrl) where n_ctrl = K - degree - 1
-        """
+    def bspline_basis(t: torch.Tensor, knots: torch.Tensor, degree: int, eps: float = 1e-12):
         B, T = t.shape
         K = knots.shape[1]
         n_ctrl = K - degree - 1
 
-        t_ = t[:, :, None]                 # (B, T, 1)
-        k0 = knots[:, None, :-1]           # (B, 1, K-1)
-        k1 = knots[:, None, 1:]            # (B, 1, K-1)
+        t_ = t[:, :, None]
+        k0 = knots[:, None, :-1]
+        k1 = knots[:, None, 1:]
 
-        # p=0 basis
+        # p=0 basis (half-open)
         N = ((t_ >= k0) & (t_ < k1)).to(t.dtype)  # (B, T, K-1)
 
-        # Right boundary handling (shape-safe, float-safe-ish):
-        # For t == last knot, the last basis function should be 1.
-        last_knot = knots[:, -1][:, None]  # (B, 1)
-        is_last = torch.isclose(t, last_knot, rtol=0.0, atol=eps)  # (B, T)
+        # Use a fp32-safe tolerance (ignore caller eps for this equality)
+        tol = 10 * torch.finfo(t.dtype).eps
+        last_knot = knots[:, -1][:, None]                    # (B, 1)
+        is_last = t >= (last_knot - tol)                     # (B, T) robust "at end"
 
-        # zero out all basis values at the last-knot locations, then set the final one to 1
+        # If exactly at the end, assign to the last interval for p=0
         N = torch.where(is_last[:, :, None], torch.zeros_like(N), N)
         N[:, :, -1] = N[:, :, -1] + is_last.to(t.dtype)
 
-        # recurse up to degree
-        for p in range(1, degree + 1):
-            # denominators
-            denom1 = knots[:, None, p:K-1] - knots[:, None, :K-1-p]     # (B, 1, K-1-p)
-            denom2 = knots[:, None, p+1:K] - knots[:, None, 1:K-p]      # (B, 1, K-1-p)
+        def safe_div(num, den):
+            return torch.where(den.abs() > tol, num / den, torch.zeros_like(num))
 
-            # weights; mask denom==0 safely via clamp
-            w1 = (t_ - knots[:, None, :K-1-p]) / denom1.clamp_min(eps)
-            w2 = (knots[:, None, p+1:K] - t_) / denom2.clamp_min(eps)
+        for p in range(1, degree + 1):
+            denom1 = knots[:, None, p:K-1] - knots[:, None, :K-1-p]
+            denom2 = knots[:, None, p+1:K] - knots[:, None, 1:K-p]
+
+            w1 = safe_div(t_ - knots[:, None, :K-1-p], denom1)
+            w2 = safe_div(knots[:, None, p+1:K] - t_, denom2)
 
             N = w1 * N[:, :, :K-1-p] + w2 * N[:, :, 1:K-p]
 
-        # Now N is (B, T, n_ctrl)
-        # (because K-1-degree = K-degree-1 = n_ctrl)
-        return N[:, :, :n_ctrl]
+        N = N[:, :, :n_ctrl]
+
+        # Strong endpoint guarantee for degree-p basis too:
+        N = torch.where(is_last[:, :, None], torch.zeros_like(N), N)
+        N[:, :, -1] = N[:, :, -1] + is_last.to(t.dtype)
+
+        return N
 
     @staticmethod
     def second_difference_gram(n_ctrl: int, device, dtype) -> torch.Tensor:

@@ -17,8 +17,8 @@ from sklearn.decomposition import PCA
 from utils.find_loop import compute_circular_coordinate_largest_h1, segment_periods, plot_theta_and_cycles, plot_pointcloud_with_period_loops
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_15/08_39_SAE"
-ph_dir = os.path.join(load_dir, "persistent_homology")
+load_dir = "results/2026_02_15/12_57_SAE"
+ph_dir = os.path.join(load_dir, "topology")
 os.makedirs(ph_dir, exist_ok=True)
 
 

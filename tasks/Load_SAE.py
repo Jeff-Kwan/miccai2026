@@ -14,7 +14,7 @@ import json
 from math import ceil
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_15/08_39_SAE"
+load_dir = "results/2026_02_15/12_57_SAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -35,7 +35,7 @@ autocast = config["training"].get("autocast", False)
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
 
-idx = random.randint(0, len(val_ds) - 1)
+idx = 1113#random.randint(0, len(val_ds) - 1)
 video = val_ds[idx]['video'].to(device).unsqueeze(0)
 video = video * 2 - 1  # [0,1] → [-1,1]
 timestamps = val_ds[idx]['timestamps'].unsqueeze(0).to(device)
@@ -47,7 +47,7 @@ B, T, C, H, W = video.shape
 with torch.inference_mode():
     with torch.autocast('cuda', torch.bfloat16, enabled=autocast):
         z = model.encode(video)
-        # z = model.spline_fit_and_eval(z, timestamps, timestamps)
+        z = model.spline_fit_and_eval(z, timestamps, timestamps)
         reconstruction = model.decode(z, H, W)
         z_motion = z - z.mean(dim=1, keepdim=True) # Remove static component
 
@@ -150,13 +150,13 @@ def plot_colormap_trajectory(x, y, t, title, xlabel, ylabel, save_path, frames_i
     ax_traj.set_ylabel(ylabel)
     ax_traj.legend()
     cbar = fig.colorbar(lc, ax=ax_traj, fraction=0.046, pad=0.04)
-    cbar.set_label("Normalized time")
+    cbar.set_label("Time")
 
     ax_x = fig.add_subplot(gs[1, 0])
     ax_x.scatter(t, x, color="black", s=1)
     for f in frames_idx:
         ax_x.scatter(t[f], x[f], color="green", marker="x", s=100, label="ES/ED", zorder=3)
-    ax_x.set_xlabel("Normalized time")
+    ax_x.set_xlabel("Time (sec)")
     ax_x.set_ylabel("D1")
     ax_x.grid(True, linestyle=":", alpha=0.6)
 
@@ -164,7 +164,7 @@ def plot_colormap_trajectory(x, y, t, title, xlabel, ylabel, save_path, frames_i
     ax_y.scatter(t, y, color="black", s=1)
     for f in frames_idx:
         ax_y.scatter(t[f], y[f], color="green", marker="x", s=100, label="ES/ED", zorder=3)
-    ax_y.set_xlabel("Normalized time")
+    ax_y.set_xlabel("Time (sec)")
     ax_y.set_ylabel("D2")
     ax_y.grid(True, linestyle=":", alpha=0.6)
 

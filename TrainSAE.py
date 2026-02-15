@@ -31,9 +31,9 @@ model = SplineAutoEncoder(
     latent=config["model"]["latent"],
     in_dim=config["model"].get("in_dim", 3),
     out_dim=config["model"].get("out_dim", None),
-    n_ctrl=ceil(config["training"]["max_frames"]//3)+3,
+    n_ctrl=ceil(config["training"]["max_frames"]//config["model"]["frame_ctrl_ratio"])+config["model"]["degree"],
     degree=config["model"]["degree"],
-    lam=config["model"]["degree"],
+    lam=config["model"]["lam"],
 ).to(device)
 
 if config["training"].get("compile", False):
@@ -42,11 +42,9 @@ if config["training"].get("compile", False):
 optimizer = torch.optim.AdamW(
     model.parameters(),
     lr=config["training"]["learning_rate"],
-    weight_decay=config["training"]["weight_decay"],
-)
+    weight_decay=config["training"]["weight_decay"])
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-    optimizer, T_max=config["training"]["epochs"]
-)
+    optimizer, T_max=config["training"]["epochs"])
 
 
 train_ds, _, _ = load_echonet_dynamic_datasets(get_mask=False)
@@ -63,8 +61,8 @@ train_dl = DataLoader(
     collate_fn=lambda x: AE_collate(
         x,
         max_frames=config["training"]["max_frames"],
-        augmentations=get_pretrain_augmentations(),
-        time_jitter=True,
+        augmentations=get_pretrain_augmentations() if config["training"]["augmentations"] else None,
+        time_jitter=config["training"]["time_jitter"],
     ),
 )
 

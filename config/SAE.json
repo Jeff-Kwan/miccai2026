@@ -1,10 +1,12 @@
 {
     "training": {
-        "epochs": 100,
+        "epochs": 200,
         "batch_size": 32,
-        "learning_rate": 3e-4,
+        "learning_rate": 2e-4,
         "weight_decay": 1e-2,
         "max_frames": 64,
+        "augmentations": false,
+        "time_jitter": false,
         "autocast": false,
         "compile": true,
         "matmul_precision": "high"
@@ -14,6 +16,7 @@
         "in_dim": 3,
         "out_dim": 3,
         "degree": 3,
+        "frame_ctrl_ratio": 4,
         "lam": 1.0
     }
 }
