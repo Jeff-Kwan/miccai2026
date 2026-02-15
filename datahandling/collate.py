@@ -279,7 +279,7 @@ def LV_collate(batch, max_frames: int, augmentations=None, generator=None):
 
 
 
-def AE_collate(batch, max_frames, augmentations, generator=None):
+def AE_collate(batch, max_frames, augmentations=None, time_jitter=False, generator=None):
     """
     If T <= max_frames: original behavior (independent sampling; overlap allowed).
     Else: sample max_frames unique frames, force temporal extremes into in_idx,
@@ -340,6 +340,12 @@ def AE_collate(batch, max_frames, augmentations, generator=None):
         # Augmentations (only on in_frames)
         if augmentations is not None:
             in_v = augmentations(in_v)
+
+        if time_jitter: # ±0.25fps timestamp jitter
+            fps = s["metadata"]["FPS"]
+            in_ts = in_ts + (torch.rand_like(in_ts) - 0.5) * (0.5 / fps)
+            out_ts = out_ts + (torch.rand_like(out_ts) - 0.5) * (0.5 / fps)
+        
 
         in_vids.append(in_v)
         out_vids.append(out_v)

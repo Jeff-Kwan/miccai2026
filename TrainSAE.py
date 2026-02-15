@@ -14,25 +14,6 @@ from datahandling.augmentations.get_augmentations import get_pretrain_augmentati
 from datahandling.collate import AE_collate
 
 
-def save_checkpoint(model: nn.Module, path: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    torch.save(model.state_dict(), path)
-
-
-def save_loss_plot(losses: list[float], path: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    x = range(1, len(losses) + 1)
-    fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(x, losses, label="Train Loss")
-    ax.set_xlabel("Epoch")
-    ax.set_ylabel("Loss")
-    ax.set_yscale("log")
-    ax.legend()
-    plt.tight_layout()
-    plt.savefig(path, bbox_inches="tight")
-    plt.close(fig)
-
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 date = datetime.now().strftime("%Y_%m_%d")
 timestamp = datetime.now().strftime("%H_%M")
@@ -74,14 +55,15 @@ train_dl = DataLoader(
     batch_size=config["training"]["batch_size"],
     shuffle=True,
     drop_last=True,
-    num_workers=24,
+    num_workers=8,
     pin_memory=True,
     persistent_workers=True,
-    prefetch_factor=4,
+    prefetch_factor=8,
     collate_fn=lambda x: AE_collate(
         x,
         max_frames=config["training"]["max_frames"],
         augmentations=None,#get_pretrain_augmentations(),
+        time_jitter=True,
     ),
 )
 
@@ -96,6 +78,28 @@ train_losses: list[float] = []
 
 trainable_m = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
 print(f"SplineAutoEncoder: {trainable_m:.2f}M trainable parameters")
+
+
+def save_checkpoint(model: nn.Module, path: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if config["training"].get("compile", False):
+        torch.save(model._orig_mod.state_dict(), path)
+    else:
+        torch.save(model.state_dict(), path)
+
+def save_loss_plot(losses: list[float], path: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    x = range(1, len(losses) + 1)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.plot(x, losses, label="Train Loss")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.set_yscale("log")
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
 
 for epoch in range(epochs):
     model.train()
