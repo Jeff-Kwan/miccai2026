@@ -3,7 +3,7 @@ from torch import nn
 import torch.nn.functional as F
 from torch import autocast
 
-from TemporalTransformer import TemporalTransformer1D, TsTransformerCfg
+from .TemporalTransformer import TemporalTransformer1D, TsTransformerCfg
 
 class ResBlock(nn.Module):
     def __init__(self, ch: int):

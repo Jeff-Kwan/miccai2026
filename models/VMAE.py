@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from VideoViT import VideoViTEncoder, VideoViTDecoder
+from .VideoViT import VideoViTEncoder, VideoViTDecoder
 
 
 class VideoMAE(nn.Module):
@@ -59,15 +59,29 @@ class VideoMAE(nn.Module):
         return x, (h, w)
 
     @staticmethod
-    def _random_keep_idx(B: int, T: int, N: int, Nvis: int, device) -> torch.Tensor:
+    def _random_keep_idx(
+        B: int, T: int, N: int, Nvis: int, tubelet_t: int, device
+    ) -> torch.Tensor:
         """
-        Sample visible patches once per video (per b), then repeat across time.
-        Output: (B,T,Nvis) with identical keep indices for all t.
+        Tubelet masking over time blocks of length tubelet_t.
+
+        Returns keep_idx: (B,T,Nvis) where keep indices are shared within each
+        consecutive block of `tubelet_t` frames, but can differ across blocks.
         """
-        idx_b = torch.empty((B, Nvis), device=device, dtype=torch.long)
+        if T % tubelet_t != 0:
+            raise ValueError(f"T={T} must be divisible by tubelet_t={tubelet_t}")
+        Tb = T // tubelet_t
+
+        # sample per (B, Tb)
+        keep = torch.empty((B, Tb, Nvis), device=device, dtype=torch.long)
         for b in range(B):
-            idx_b[b] = torch.randperm(N, device=device)[:Nvis]
-        return idx_b.unsqueeze(1).expand(B, T, Nvis).contiguous()
+            for tb in range(Tb):
+                keep[b, tb] = torch.randperm(N, device=device)[:Nvis]
+
+        # expand each block to its frames
+        keep = keep.unsqueeze(2).expand(B, Tb, tubelet_t, Nvis)   # (B,Tb,tau,Nvis)
+        keep = keep.reshape(B, T, Nvis).contiguous()
+        return keep
 
     @staticmethod
     def _masked_idx_sorted(N: int, keep_bt: torch.Tensor) -> torch.Tensor:
@@ -140,7 +154,7 @@ class VideoMAE(nn.Module):
             if not (0.0 < r < 1.0):
                 raise ValueError(f"mask_ratio must be in (0,1), got {r}")
             Nvis = max(1, int(round(N * (1.0 - r))))
-            keep_idx = self._random_keep_idx(B, T, N, Nvis, video.device)
+            keep_idx = self._random_keep_idx(B, T, N, Nvis, tubelet_t=8, device=video.device)
         else:
             if keep_idx.dim() != 3 or keep_idx.size(0) != B or keep_idx.size(1) != T:
                 raise ValueError(f"keep_idx must be (B,T,Nvis)=({B},{T},*), got {tuple(keep_idx.shape)}")
