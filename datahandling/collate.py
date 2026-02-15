@@ -360,8 +360,8 @@ def AE_collate(batch, max_frames, augmentations=None, time_jitter=False, generat
 
     # Normalize to [-1, 1]
     return {
-        "in_frames": in_frames * 2 - 1,
-        "out_frames": out_frames * 2 - 1,
+        "in_frames": in_frames.mul_(2).sub_(1),
+        "out_frames": out_frames.mul_(2).sub_(1),
         "in_timestamps": in_timestamps,
         "out_timestamps": out_timestamps,
     }
