@@ -36,17 +36,13 @@ train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
 train_dl = DataLoader(
     train_ds, batch_size=1, shuffle=True,
-    collate_fn=EDES_collate, num_workers=32,
-    pin_memory=True, persistent_workers=True
-)
+    collate_fn=EDES_collate, num_workers=24, pin_memory=True)
 val_dl = DataLoader(
     val_ds, batch_size=1, shuffle=True,
-    collate_fn=EDES_collate, num_workers=32, pin_memory=True
-)
+    collate_fn=EDES_collate, num_workers=24, pin_memory=True)
 test_dl = DataLoader(
     test_ds, batch_size=1, shuffle=False,
-    collate_fn=EDES_collate, num_workers=32, pin_memory=True
-)
+    collate_fn=EDES_collate, num_workers=24, pin_memory=True)
 
 def eval_split(dl, split_name: str, use_amp: bool = True):
     ed_mae_list, es_mae_list, fps_all = [], [], []
