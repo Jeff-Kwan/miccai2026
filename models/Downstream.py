@@ -7,6 +7,9 @@ class EF_Probe(nn.Module):
         super().__init__()
         self.encoder = encoder
         latent_dim = encoder.cfg.dim
+        self.query = nn.Parameter(torch.randn(1, 1, latent_dim) * 0.01)
+        self.qnorm = nn.LayerNorm(latent_dim)
+        self.attnpool = nn.MultiheadAttention(latent_dim, num_heads=6, dropout=dropout, batch_first=True)
         self.fc = nn.Sequential(
             nn.LayerNorm(latent_dim),
             nn.Linear(latent_dim, latent_dim*2),
@@ -24,10 +27,11 @@ class EF_Probe(nn.Module):
             B, T, C, H, W = video.shape
             N = (H // self.encoder.cfg.patch) * (W // self.encoder.cfg.patch)
             keep_idx = torch.arange(N, device=video.device)[None, None, :].expand(B, T, N)
-            gcls, frames, _ = self.encoder(video, keep_idx=keep_idx, timestamps=timestamp)
-            
+            cls, _, _ = self.encoder(video, keep_idx=keep_idx, timestamps=timestamp)
+        
+        gcls, _ = self.attnpool(self.qnorm(self.query).expand(B, -1, -1), cls, cls)
         # Prediction mlp head
-        pred = self.fc(gcls).squeeze(-1)  # [B,T]
+        pred = self.fc(gcls).squeeze(-1).squeeze(-1)  # [B]
         return pred
 
 
@@ -38,23 +42,23 @@ class LV_Segmentation(nn.Module):
         latent_dim = encoder.cfg.dim
         patch = encoder.cfg.patch
         self.out_c = out_c
-        # self.fc = nn.Sequential(
-        #     nn.LayerNorm(latent_dim),
-        #     nn.Linear(latent_dim, latent_dim*2),
-        #     nn.GELU(),
-        #     nn.Dropout(dropout),
-        #     nn.Linear(latent_dim*2, patch**2 * out_c))
+        self.fc = nn.Sequential(
+            nn.LayerNorm(latent_dim),
+            nn.Linear(latent_dim, latent_dim*2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(latent_dim*2, patch**2 * out_c))
 
-        # for param in self.encoder.parameters():
-        #     param.requires_grad = False
-        self.conv_out = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode='nearest'),
-            nn.Conv2d(latent_dim, latent_dim//4, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.Upsample(scale_factor=2, mode='nearest'),
-            nn.Conv2d(latent_dim//4, latent_dim//16, kernel_size=3, padding=1),
-            nn.GELU(),
-            nn.ConvTranspose2d(latent_dim//16, out_c, 2, 2, 0))
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+        # self.conv_out = nn.Sequential(
+        #     nn.Upsample(scale_factor=2, mode='nearest'),
+        #     nn.Conv2d(latent_dim, latent_dim//4, kernel_size=3, padding=1),
+        #     nn.GELU(),
+        #     nn.Upsample(scale_factor=2, mode='nearest'),
+        #     nn.Conv2d(latent_dim//4, latent_dim//16, kernel_size=3, padding=1),
+        #     nn.GELU(),
+        #     nn.ConvTranspose2d(latent_dim//16, out_c, 2, 2, 0))
 
     def forward(self, video, timestamp, autocast):
         # with torch.no_grad():
@@ -62,16 +66,16 @@ class LV_Segmentation(nn.Module):
             B, T, C, H, W = video.shape
             N = (H // self.encoder.cfg.patch) * (W // self.encoder.cfg.patch)
             keep_idx = torch.arange(N, device=video.device)[None, None, :].expand(B, T, N)
-            gcls, frames, _ = self.encoder(video, keep_idx=keep_idx, timestamps=timestamp)
+            cls, frames, _ = self.encoder(video, keep_idx=keep_idx, timestamps=timestamp)
             patches = frames[:, :, 1:, :]  # [B, T, N, D]
             
         B, T, N, D = patches.shape
-        # pred = self.fc(patches)
+        pred = self.fc(patches)
 
         # Unpatchify and reassemble
         h, w = H // self.encoder.cfg.patch, W // self.encoder.cfg.patch
-        # pred = pred.view(B, T, h, w, self.encoder.cfg.patch, self.encoder.cfg.patch, self.out_c)
-        # pred = pred.permute(0, 1, 6, 2, 4, 3, 5).reshape(B, T, self.out_c, H, W)
-        patches = patches.permute(0, 1, 3, 2).reshape(B*T, D, h, w)
-        pred = self.conv_out(patches).reshape(B, T, self.out_c, H, W)
+        pred = pred.view(B, T, h, w, self.encoder.cfg.patch, self.encoder.cfg.patch, self.out_c)
+        pred = pred.permute(0, 1, 6, 2, 4, 3, 5).reshape(B, T, self.out_c, H, W)
+        # patches = patches.permute(0, 1, 3, 2).reshape(B*T, D, h, w)
+        # pred = self.conv_out(patches).reshape(B, T, self.out_c, H, W)
         return pred
