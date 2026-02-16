@@ -39,7 +39,7 @@ autocast = config["training"]["autocast"]
 
 enc = list(probe.encoder.parameters())
 optimizer = torch.optim.AdamW([
-    {"params": enc, "lr": lr/10, "weight_decay": weight_decay/10},
+    {"params": enc, "lr": lr/4, "weight_decay": weight_decay/4},
     {"params": [p for p in probe.parameters() if id(p) not in {id(p) for p in enc}],
      "lr": lr, "weight_decay": weight_decay}])
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)

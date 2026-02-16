@@ -68,9 +68,9 @@ autocast = config["training"]["autocast"]
 
 enc = list(model.encoder.parameters())
 optimizer = torch.optim.AdamW([
-    {"params": enc, "lr": learning_rate/4, "weight_decay": weight_decay/4},
+    {"params": enc, "lr": lr/4, "weight_decay": weight_decay/4},
     {"params": [p for p in model.parameters() if id(p) not in {id(p) for p in enc}],
-     "lr": learning_rate, "weight_decay": weight_decay}])
+     "lr": lr, "weight_decay": weight_decay}])
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
 
