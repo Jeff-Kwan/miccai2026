@@ -143,9 +143,11 @@ class SplineAutoEncoder(nn.Module):
     # Encode / decode
     # -------------------------
 
-    def encode(self, x: torch.Tensor) -> torch.Tensor:
+    def encode(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
         # (B, T, C, H, W) -> (B, T, latent)
-        return self.encoder(x)
+        x = self.encoder(x)
+        x = self.bottleneck(x, timestamps=t)
+        return x
 
     def decode(self, z: torch.Tensor, H: int, W: int) -> torch.Tensor:
         # (B, T, latent) -> (B, T, C, H, W)
@@ -302,8 +304,7 @@ class SplineAutoEncoder(nn.Module):
         """
         B, T_in, C, H, W = in_frames.shape
 
-        z_in = self.encode(in_frames)
-        z_in = self.bottleneck(z_in, timestamps=in_timestamps)
+        z_in = self.encode(in_frames, in_timestamps)
         z_out = self.spline_fit_and_eval(
             z_in=z_in,
             t_in=in_timestamps,
