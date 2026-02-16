@@ -33,7 +33,7 @@ output_dir = os.path.join(load_dir, "LVSeg")
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 50
+epochs = 60
 batch_size = 16
 lr = 3e-4
 weight_decay = 1e-3

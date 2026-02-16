@@ -20,12 +20,12 @@ os.makedirs(output_dir, exist_ok=True)
 
 config = json.load(open("config/VMAE.json", "r"))
 max_frames = config["training"]["max_frames"]
-epochs = 50
+epochs = 60
 batch_size = 16
 lr = 3e-4
 weight_decay = 1e-3
 dropout = 0.1
-torch_compile = True
+torch_compile = False
 torch.set_float32_matmul_precision('high')
 
 enc = VideoViTEncoder(VideoViTCfg(**config["encoder"]))

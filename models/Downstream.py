@@ -28,8 +28,8 @@ class EF_Probe(nn.Module):
             N = (H // self.encoder.cfg.patch) * (W // self.encoder.cfg.patch)
             keep_idx = torch.arange(N, device=video.device)[None, None, :].expand(B, T, N)
             cls, _, _ = self.encoder(video, keep_idx=keep_idx, timestamps=timestamp)
-        
-        gcls, _ = self.attnpool(self.qnorm(self.query).expand(B, -1, -1), cls, cls)
+
+        gcls, _ = self.attnpool(self.qnorm(self.query).repeat(B, 1, 1), cls, cls)
         # Prediction mlp head
         pred = self.fc(gcls).squeeze(-1).squeeze(-1)  # [B]
         return pred
@@ -67,10 +67,9 @@ class LV_Segmentation(nn.Module):
             N = (H // self.encoder.cfg.patch) * (W // self.encoder.cfg.patch)
             keep_idx = torch.arange(N, device=video.device)[None, None, :].expand(B, T, N)
             cls, frames, _ = self.encoder(video, keep_idx=keep_idx, timestamps=timestamp)
-            patches = frames[:, :, 1:, :]  # [B, T, N, D]
             
-        B, T, N, D = patches.shape
-        pred = self.fc(patches)
+        B, T, N, D = frames.shape
+        pred = self.fc(frames)
 
         # Unpatchify and reassemble
         h, w = H // self.encoder.cfg.patch, W // self.encoder.cfg.patch
