@@ -92,14 +92,15 @@ def compute_main_orientation_and_extrema(
     endpoint2 = mean_point + t_max * direction
 
     # --- Step 3: Detect peaks and valleys in the projections ---
-    smoothed_proj = savgol_filter(trajectory_projected, window_length, polyorder)
+    # smoothed_proj = savgol_filter(trajectory_projected, window_length, polyorder)
 
-    wander_flag = detect_baseline_wander(trajectory_projected, fps)
-    if wander_flag:
-        new_traj = np.pad(smoothed_proj, (10, 10), "reflect")
-        filtered_proj = highpass_filter(new_traj, fps)[10:-10]
-    else:
-        filtered_proj = smoothed_proj
+    # wander_flag = detect_baseline_wander(trajectory_projected, fps)
+    # if wander_flag:
+    #     new_traj = np.pad(smoothed_proj, (10, 10), "reflect")
+    #     filtered_proj = highpass_filter(new_traj, fps)[10:-10]
+    # else:
+    #     filtered_proj = smoothed_proj
+    filtered_proj = trajectory_projected
 
     prominence_threshold = 0.3 * (np.max(filtered_proj) - np.min(filtered_proj))
 

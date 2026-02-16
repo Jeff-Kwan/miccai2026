@@ -17,7 +17,7 @@ from sklearn.decomposition import PCA
 from utils.find_loop import compute_circular_coordinate_largest_h1, segment_periods, plot_theta_and_cycles, plot_pointcloud_with_period_loops
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_15/12_57_SAE"
+load_dir = "results/2026_02_15/15_04_SAE"
 ph_dir = os.path.join(load_dir, "topology")
 os.makedirs(ph_dir, exist_ok=True)
 
@@ -38,7 +38,7 @@ autocast = config["training"].get("autocast", False)
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
 
-idx = 1196#random.randint(0, len(val_ds) - 1)
+idx = 1113#random.randint(0, len(val_ds) - 1)
 video = val_ds[idx]['video'].to(device).unsqueeze(0)
 video = video * 2 - 1  # [0,1] → [-1,1]
 timestamps = val_ds[idx]['timestamps'].unsqueeze(0).to(device)
@@ -62,9 +62,12 @@ Z_np = z[0].detach().float().cpu().numpy()            # [T, D]
 Z_np = Z_np - Z_np.mean(axis=0, keepdims=True)
 
 # PCA and keep top k components
-# pca = PCA(n_components=0.95, svd_solver='full')
-# Z_np = pca.fit_transform(Z_np)  # [T, k]
-# print(f"Original latent dim: {z.shape[2]}, after PCA (95% variance): {Z_np.shape[1]}")
+pca = PCA(n_components=0.95, svd_solver='full')
+Z_np = pca.fit_transform(Z_np)  # [T, k]
+print(f"Original latent dim: {z.shape[2]}, after PCA (95% variance): {Z_np.shape[1]}")
+
+# Normalize
+# Z_np = (Z_np - Z_np.mean(axis=0)) / Z_np.std(axis=0)
 
 # ---- Run Ripser on the point cloud ----
 # maxdim=2 gives H0/H1/H2.

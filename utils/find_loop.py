@@ -141,31 +141,9 @@ def compute_circular_coordinate_largest_h1(X, maxdim=2, n_landmarks=200, smooth_
     dgms = ripser(X, maxdim=maxdim)["dgms"]
 
     cc = CircularCoords(X, n_landmarks=min(int(n_landmarks), len(X)))
-    # theta01 = cc.get_coordinates(perc=0.95, cocycle_idx=0)
-
-    best_score = -np.inf
-    theta01 = None
-    theta01_s = None
-    theta_turns = None
-
-    for k in range(10):  # try first few cocycles
-        try:
-            th = cc.get_coordinates(perc=0.98, cocycle_idx=k)
-        except Exception:
-            break
-
-        th_s = smooth_theta_on_circle(th, window_length=smooth_window_length, polyorder=smooth_polyorder)
-        tt = unwrap_theta_turns(th_s)
-        d = np.diff(tt)
-
-        # score: 1 is perfect (no backward steps), 0 is all backward
-        score = np.sum(np.clip(d, 0.0, None)) / (np.sum(np.abs(d)) + 1e-12)
-
-        if score > best_score:
-            best_score = score
-            theta01 = th
-            theta01_s = th_s
-            theta_turns = tt
+    theta01 = cc.get_coordinates(perc=0.95, cocycle_idx=0)
+    theta01_s = smooth_theta_on_circle(theta01, window_length=smooth_window_length, polyorder=smooth_polyorder)
+    theta_turns = unwrap_theta_turns(theta01_s)
 
     cycle_ids, periods, boundaries = segment_periods(
         theta_turns,

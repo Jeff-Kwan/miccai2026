@@ -11,6 +11,7 @@ from tqdm import tqdm
 import json
 from math import ceil
 from utils.find_extrema import compute_main_orientation_and_extrema
+from utils.filters import highpass, SavGolFilterTime
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 load_dir = "results/2026_02_15/15_04_SAE"
@@ -42,7 +43,7 @@ test_dl = DataLoader(test_ds, batch_size=1, shuffle=False,
 
 def eval_split(dl, split_name: str, use_amp: bool = True):
     ed_mae_list, es_mae_list, fps_all = [], [], []
-
+    # savgol = SavGolFilterTime(window_length=21, polyorder=3)
     with torch.inference_mode():
         for videos, timestamps, frames_idx, fps in tqdm(dl, desc=split_name):
             # [0] because we go through one by one (variable length video)
@@ -57,6 +58,8 @@ def eval_split(dl, split_name: str, use_amp: bool = True):
                 z = model.encode(videos)
             z = model.spline_fit_and_eval(z, timestamps, timestamps)
             z_motion = (z - z.mean(dim=1, keepdim=True)) # Remove static component
+            # z_motion = savgol(z_motion.squeeze(0))
+            z_motion = highpass(z_motion, fs=fps, cutoff=1.0, order=2)
 
             z_motion = z_motion.float().squeeze().cpu().numpy()
 
