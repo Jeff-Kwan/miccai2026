@@ -13,8 +13,7 @@ from math import ceil
 from utils.find_extrema import compute_main_orientation_and_extrema
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_15/12_57_SAE"
-autocast = False
+load_dir = "results/2026_02_15/15_04_SAE"
 
 # ---- Model ----
 config = json.load(open("config/SAE.json", "r"))
@@ -34,14 +33,11 @@ model = model.to(device).eval()
 # ---- Dataset ----
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
-train_dl = DataLoader(
-    train_ds, batch_size=1, shuffle=True,
+train_dl = DataLoader(train_ds, batch_size=1, shuffle=True,
     collate_fn=EDES_collate, num_workers=24, pin_memory=True)
-val_dl = DataLoader(
-    val_ds, batch_size=1, shuffle=True,
+val_dl = DataLoader(val_ds, batch_size=1, shuffle=True,
     collate_fn=EDES_collate, num_workers=24, pin_memory=True)
-test_dl = DataLoader(
-    test_ds, batch_size=1, shuffle=False,
+test_dl = DataLoader(test_ds, batch_size=1, shuffle=False,
     collate_fn=EDES_collate, num_workers=24, pin_memory=True)
 
 def eval_split(dl, split_name: str, use_amp: bool = True):
@@ -70,8 +66,8 @@ def eval_split(dl, split_name: str, use_amp: bool = True):
             group = np.concatenate([group_ed, group_es])
 
             # Mean Absolute Error
-            ed_err = min(abs(edpt - gt_ed) for edpt in group)
-            es_err = min(abs(espt - gt_es) for espt in group)
+            ed_err = np.min(np.abs(group - gt_ed))
+            es_err = np.min(np.abs(group - gt_es))
 
             ed_mae_list.append(ed_err)
             es_mae_list.append(es_err)
