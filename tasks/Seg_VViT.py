@@ -26,16 +26,16 @@ from datahandling.augmentations.get_augmentations import get_pretrain_augmentati
 # --------------------
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-load_dir = "results/2026_02_14/17_21_VMAE"
+load_dir = "results/2026_02_15/15_28_VMAE"
 ckpt_name = "VMAE.pth"
 config = json.load(open("config/VMAE.json", "r"))
 output_dir = os.path.join(load_dir, "LVSeg")
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 100
-batch_size = 32
-learning_rate = 2e-4
+epochs = 50
+batch_size = 16
+lr = 3e-4
 weight_decay = 1e-3
 dropout = 0.1
 frames = config["training"]["max_frames"]
@@ -45,7 +45,7 @@ torch_compile = False
 train_params = {
     "epochs": epochs,
     "batch_size": batch_size,
-    "learning_rate": learning_rate,
+    "learning_rate": lr,
     "weight_decay": weight_decay,
     "dropout": dropout,
     "frames": frames,
