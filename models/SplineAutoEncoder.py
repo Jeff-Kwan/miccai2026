@@ -8,13 +8,43 @@ class ResBlock(nn.Module):
     def __init__(self, ch: int):
         super().__init__()
         self.convs = nn.Sequential(
-            nn.Conv2d(ch, ch, kernel_size=3, padding=1),
+            nn.Conv2d(ch, ch, 3, 1, 1),
             nn.GroupNorm(4, ch),
             nn.GELU(),
-            nn.Conv2d(ch, ch, kernel_size=3, padding=1))
+            nn.Conv2d(ch, ch, 3, 1, 1))
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return x + self.convs(x)
+
+class Downsample(nn.Module):
+    def __init__(self, in_ch: int, out_ch: int):
+        super().__init__()
+        self.activated = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, 3, 2, 1),
+            nn.GELU())
+        self.residual = nn.Sequential(
+            nn.AvgPool2d(3, 2, 1),
+            nn.Conv2d(in_ch, out_ch, 1, 1, 0))
+        self.norm = nn.GroupNorm(4, out_ch)
+    
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.norm(self.activated(x) + self.residual(x))
+
+
+class Upsample(nn.Module):
+    def __init__(self, in_ch: int, out_ch: int):
+        super().__init__()
+        self.activated = nn.Sequential(
+            nn.ConvTranspose2d(in_ch, out_ch, 2, 2, 0),
+            nn.GELU())
+        self.residual = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode="nearest"),
+            nn.Conv2d(in_ch, out_ch, 3, 1, 1))
+        self.norm = nn.GroupNorm(4, out_ch)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.norm(self.activated(x) + self.residual(x))
 
 
 class SimpleConvEncoder(nn.Module):
@@ -26,50 +56,42 @@ class SimpleConvEncoder(nn.Module):
     def __init__(self, latent: int, in_dim: int = 3):
         super().__init__()
         base = latent // 2
-        def stem(in_ch, out_ch):
-            return nn.Sequential(
-                nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1),
-                nn.GroupNorm(4, out_ch),
-                nn.GELU(),
-            )
-
-        def downsample(in_ch, out_ch):
-            return nn.Sequential(
-                nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=2, padding=1),
-                nn.GroupNorm(4, out_ch),
-                nn.GELU(),
-            )
 
         # Channel schedule: inverse of decoder.
         channels = [base // 32, base // 16, base // 8, base // 4, base // 2, base, base]
 
-        self.stem = stem(in_dim, channels[0])
+        self.in_conv = nn.Conv2d(in_dim, channels[0], 3, 1, 1)
         
         # Build stages with loop: 2 ResBlocks + downsample each
         self.stages = nn.ModuleList()
-        for i in range(len(channels) - 1):
+        for i in range(1, len(channels)):
             stage = nn.Sequential(
+                Downsample(channels[i-1], channels[i]),
                 ResBlock(channels[i]),
-                ResBlock(channels[i]),
-                downsample(channels[i], channels[i + 1])
-            )
+                ResBlock(channels[i]))
             self.stages.append(stage)
 
         self.to_latent = nn.Conv2d(channels[-1], latent, kernel_size=1)
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.latent_mlp = nn.Sequential(
+            nn.LayerNorm(latent),
+            nn.Linear(latent, latent*4),
+            nn.GELU(),
+            nn.Linear(latent*4, latent))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, T, C, H, W)
         B, T, C, H, W = x.shape
-        x = x.view(B * T, C, H, W)
+        x = x.reshape(B * T, C, H, W)
 
-        h = self.stem(x)
+        h = self.in_conv(x)
         for stage in self.stages:
             h = stage(h)
 
         h = self.to_latent(h)            # (B*T, latent, hH, hW)
         h = self.pool(h)                 # (B*T, latent, 1, 1)
-        z = h.view(B, T, -1)             # (B, T, latent)
+        z = h.reshape(B, T, -1)             # (B, T, latent)
+        z = self.latent_mlp(z)
         return z
 
 
@@ -77,31 +99,24 @@ class SimpleConvDecoder(nn.Module):
     def __init__(self, latent: int, out_dim: int = 3):
         super().__init__()
         base = latent // 2
-        def up_block(in_ch, out_ch):
-            return nn.Sequential(
-                nn.Upsample(scale_factor=2, mode="nearest"),
-                nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1),
-                nn.GroupNorm(4, out_ch),
-                nn.GELU(),
-            )
 
         self.decoder = nn.Sequential(
             nn.ConvTranspose2d(latent, base, 2, 2, 0),     # 1 -> 2
-            up_block(base,      base // 2),                # 2 -> 4
-            up_block(base // 2, base // 4),                # 4 -> 8
-            up_block(base // 4, base // 8),                # 8 -> 16
-            up_block(base // 8, base // 16),               # 16 -> 32
-            up_block(base // 16, base // 32),              # 32 -> 64
+            Upsample(base,      base // 2),                # 2 -> 4
+            Upsample(base // 2, base // 4),                # 4 -> 8
+            Upsample(base // 4, base // 8),                # 8 -> 16
+            Upsample(base // 8, base // 16),               # 16 -> 32
+            Upsample(base // 16, base // 32),              # 32 -> 64
             nn.Conv2d(base // 32, out_dim, kernel_size=3, padding=1),
         )
 
     def forward(self, z: torch.Tensor, H: int, W: int) -> torch.Tensor:
         # z: (B, T, latent)
         B, T, latent = z.shape
-        z = z.view(B * T, latent, 1, 1)                  # (B*T, latent, 1, 1)
+        z = z.reshape(B * T, latent, 1, 1)                  # (B*T, latent, 1, 1)
         x = self.decoder(z)                              # (B*T, out_dim, 64, 64) nominal
         x = F.interpolate(x, size=(H, W), mode="bilinear", align_corners=False)
-        return x.view(B, T, -1, H, W)                    # (B, T, out_dim, H, W)
+        return x.reshape(B, T, -1, H, W)                    # (B, T, out_dim, H, W)
 
 
 

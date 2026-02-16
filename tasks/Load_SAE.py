@@ -5,6 +5,7 @@ from models.SplineAutoEncoder import SplineAutoEncoder
 from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
 import os
 import random
+from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 import matplotlib.gridspec as gridspec
@@ -14,7 +15,7 @@ import json
 from math import ceil
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_15/15_04_SAE"
+load_dir = "results/2026_02_16/08_16_SAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -35,7 +36,7 @@ autocast = config["training"].get("autocast", False)
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
 
-idx = 1113#random.randint(0, len(val_ds) - 1)
+idx = random.randint(0, len(val_ds) - 1)
 video = val_ds[idx]['video'].to(device).unsqueeze(0)
 video = video * 2 - 1  # [0,1] → [-1,1]
 timestamps = val_ds[idx]['timestamps'].unsqueeze(0).to(device)
@@ -67,15 +68,14 @@ z_motion = z_motion.squeeze(0).float().cpu().numpy()  # shape [T, latent]
 
 # Print participation ratio of z_motion
 cov = np.cov(z_motion, rowvar=False)
-eigenvalues, eigenvectors = np.linalg.eigh(cov)
-total_variance = eigenvalues.sum()
-participation_ratio = (eigenvalues.sum() ** 2) / (np.sum(eigenvalues ** 2) + 1e-10)
+trace_c = np.trace(cov)
+trace_c2 = np.sum(cov * cov)
+participation_ratio = (trace_c ** 2) / (trace_c2 + 1e-10)
 print(f"Participation Ratio of z_motion: {participation_ratio:.2f}")
 
 # PCA for top 2 components
-top2_indices = np.argsort(eigenvalues)[-2:]
-top2_eigenvectors = eigenvectors[:, top2_indices]
-z_motion = z_motion @ top2_eigenvectors  # shape [T, 2]
+pca = PCA(n_components=2)
+z_motion = pca.fit_transform(z_motion)
 
 
 T, H, W, C = video.shape
