@@ -303,9 +303,9 @@ def AE_collate(batch, max_frames, augmentations=None, time_jitter=False, generat
         # Shift timestamps to start at 0
         ts = ts - ts[0]
 
-        if time_jitter: # ±0.25fps timestamp jitter for middle timestamps
+        if time_jitter: # ±0.5fps timestamp jitter for middle timestamps
             fps = s["metadata"]["FPS"]
-            ts[1:-1] = ts[1:-1] + (torch.rand_like(ts[1:-1]) - 0.5) * (0.5 / fps)
+            ts[1:-1] = ts[1:-1] + (torch.rand_like(ts[1:-1]) - 0.5) * (1 / fps)
 
         # Augmentations (only on in_frames)
         if augmentations is not None:
