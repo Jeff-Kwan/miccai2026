@@ -10,11 +10,13 @@ import numpy as np
 from tqdm import tqdm
 import json
 from math import ceil
-from utils.find_extrema import compute_main_orientation_and_extrema
-from utils.filters import highpass, SavGolFilterTime
+from utils.find_extrema import compute_main_orientation_and_extrema, savgol_filter, highpass_filter, detect_baseline_wander
+from utils.filters import highpass, SavGolFilterTime, bandpass, gaussian_smooth
+from scipy.signal import find_peaks
+from sklearn.decomposition import PCA
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_16/08_16_SAE"
+load_dir = "results/2026_02_16/16_46_SAE"
 
 # ---- Model ----
 config = json.load(open("config/SAE.json", "r"))
@@ -43,7 +45,7 @@ test_dl = DataLoader(test_ds, batch_size=1, shuffle=False,
 
 def eval_split(dl, split_name: str, use_amp: bool = True):
     ed_mae_list, es_mae_list, fps_all = [], [], []
-    savgol = SavGolFilterTime(window_length=21, polyorder=3)
+    savgol = SavGolFilterTime(window_length=11, polyorder=3)
     with torch.inference_mode():
         for videos, timestamps, frames_idx, fps in tqdm(dl, desc=split_name):
             # [0] because we go through one by one (variable length video)
@@ -56,17 +58,19 @@ def eval_split(dl, split_name: str, use_amp: bool = True):
             
             with torch.autocast('cuda', torch.bfloat16, enabled=use_amp):
                 z = model.encode(videos)
-            z = model.spline_fit_and_eval(z, timestamps, timestamps)
+            # z = model.spline_fit_and_eval(z, timestamps, timestamps)
             z_motion = (z - z.mean(dim=1, keepdim=True)) # Remove static component
-            z_motion = savgol(z_motion.squeeze(0))
-            z_motion = highpass(z_motion, fs=fps, cutoff=0.5, order=3)
-
+            # z_motion = savgol(z_motion.squeeze(0))
+            # z_motion = highpass(z_motion, fs=fps, cutoff=0.5, order=2)
             z_motion = z_motion.float().squeeze().cpu().numpy()
 
-            group_ed, group_es, _, _, _, _ = compute_main_orientation_and_extrema(z_motion, fps)
-
             # HOW do I know which is which??!
-            group = np.concatenate([group_ed, group_es])
+            # group_ed, group_es, _, _, _, _ = compute_main_orientation_and_extrema(z_motion, fps)
+            # group = np.concatenate([group_ed, group_es])
+
+            z_motion = np.linalg.norm(z_motion, axis=-1)
+            # z_motion = savgol_filter(z_motion, 7, 3, axis=0)
+            group = find_peaks(z_motion, prominence=0.5*np.std(z_motion))[0]
 
             # Mean Absolute Error
             ed_err = np.min(np.abs(group - gt_ed))

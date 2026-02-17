@@ -157,3 +157,67 @@ class SavGolFilterTime(nn.Module):
         else:
             # [B, D, T] -> [B, T, D]
             return y_.transpose(1, 2)
+
+
+def bandpass(
+    signal: torch.Tensor,
+    fs: float,
+    lowcut: float = 0.5,
+    highcut: float = 5.0,
+    order: int = 4,
+):
+    """
+    signal: [T, D]
+    fs: sampling rate (Hz)
+    lowcut/highcut: band edges (Hz), with 0 < lowcut < highcut < fs/2
+    order: Butterworth filter order
+    """
+    if lowcut <= 0:
+        raise ValueError("lowcut must be > 0 for a digital Butterworth bandpass.")
+    nyquist = 0.5 * fs
+    if highcut >= nyquist:
+        raise ValueError(f"highcut must be < Nyquist ({nyquist} Hz).")
+    if not (lowcut < highcut):
+        raise ValueError("Require lowcut < highcut.")
+
+    # [T, D] -> [D, T] (torchaudio expects (..., time))
+    x = signal.transpose(0, 1)
+
+    low = lowcut / nyquist
+    high = highcut / nyquist
+
+    # SciPy computes coefficients
+    b, a = butter(order, [low, high], btype="band", analog=False)
+
+    # move coeffs to torch with matching dtype/device
+    b = torch.tensor(b, dtype=x.dtype, device=x.device)
+    a = torch.tensor(a, dtype=x.dtype, device=x.device)
+
+    y = filtfilt(x, a_coeffs=a, b_coeffs=b)
+    return y.transpose(0, 1)
+
+
+def gaussian_smooth(signal: torch.Tensor, sigma: float):
+    """
+    signal: [T, D]
+    sigma: standard deviation of Gaussian kernel in frames
+    """
+    if sigma <= 0:
+        raise ValueError("sigma must be > 0 for Gaussian smoothing.")
+
+    # Create Gaussian kernel
+    radius = int(3 * sigma)
+    x = torch.arange(-radius, radius + 1, device=signal.device)
+    kernel = torch.exp(-0.5 * (x / sigma) ** 2)
+    kernel = kernel / kernel.sum()
+
+    # [T, D] -> [D, T] for conv1d
+    x = signal.transpose(0, 1).unsqueeze(0)  # [1, D, T]
+    weight = kernel.view(1, 1, -1).repeat(x.shape[1], 1, 1)  # [D, 1, K]
+
+    # Pad and convolve
+    padding = radius
+    x_padded = F.pad(x, (padding, padding), mode="reflect")
+    smoothed = F.conv1d(x_padded, weight, groups=x.shape[1])
+
+    return smoothed.squeeze(0).transpose(0, 1).contiguous()  # back to [T, D]
