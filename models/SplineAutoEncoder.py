@@ -67,7 +67,7 @@ class SimpleConvEncoder(nn.Module):
 
         self.to_latent = nn.Conv2d(channels[-1], latent, kernel_size=1)
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.latent_mlp = nn.Sequential(
+        self.latent_proj = nn.Sequential(
             nn.LayerNorm(latent),
             nn.Linear(latent, latent))
 
@@ -83,7 +83,7 @@ class SimpleConvEncoder(nn.Module):
         h = self.to_latent(h)            # (B*T, latent, hH, hW)
         h = self.pool(h)                 # (B*T, latent, 1, 1)
         z = h.reshape(B, T, -1)             # (B, T, latent)
-        z = self.latent_mlp(z)
+        z = self.latent_proj(z)
         return z
 
 
@@ -300,7 +300,7 @@ class SplineAutoEncoder(nn.Module):
         # Return to original dtype for the rest of the network
         return z_out32.to(orig_dtype)
 
-    def forward_spline(
+    def forward(
         self,
         in_frames: torch.Tensor,       # (B, T_in, C, H, W)
         in_timestamps: torch.Tensor,   # (B, T_in)
@@ -309,18 +309,18 @@ class SplineAutoEncoder(nn.Module):
         """
         Returns:
           recon_out: (B, T_out, C, H, W)
-          z_in:      (B, T_in, latent)
-          z_out:     (B, T_out, latent)
+          z_reg:     L1 regularization term
         """
-        B, T_in, C, H, W = in_frames.shape
+        _, _, _, H, W = in_frames.shape
 
         z_in = self.encode(in_frames)
         z_out = self.spline_fit_and_eval(
             z_in=z_in,
             t_in=in_timestamps,
             t_out=out_timestamps)
+        z_reg = (z_in - z_out).abs().sum(dim=-1).mean()  # L1 Regularization
         recon_out = self.decode(z_out, H=H, W=W)
-        return recon_out, z_in, z_out
+        return recon_out, z_reg
 
 
 if __name__ == "__main__":

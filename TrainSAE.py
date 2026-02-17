@@ -107,13 +107,16 @@ for epoch in range(epochs):
 
     pbar = tqdm(train_dl, desc=f"Epoch {epoch+1}/{epochs}")
     for batch in pbar:
-        videos = batch["videos"].to(device, non_blocking=True)           
-        timestamps = batch["timestamps"].to(device, non_blocking=True)
+        in_frames = batch["in_frames"].to(device)  # [B, T, C, H, W]
+        in_timestamps = batch["in_timestamps"].to(device)  # [B, T]
+        out_frames = batch["out_frames"].to(device)  # [B, T, C, H, W]
+        out_timestamps = batch["out_timestamps"].to(device)  # [B, T]
 
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast('cuda', dtype=torch.bfloat16, enabled=autocast):
-            recon, z_in, z_out = model.forward_spline(videos, timestamps, timestamps)
-            loss = criterion(recon, videos)
+            recon, z_reg = model(in_frames, in_timestamps, out_timestamps)
+            recon_loss = criterion(recon, out_frames)
+            loss = recon_loss + config["training"]["reg"] * z_reg
 
         loss.backward()
         gnorm = nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
@@ -121,7 +124,7 @@ for epoch in range(epochs):
 
         running += loss.item() * config["training"]["batch_size"]
         seen += config["training"]["batch_size"]
-        pbar.set_postfix({"loss": float(loss.item()), "gnorm": float(gnorm)})
+        pbar.set_postfix({"Recon": float(recon_loss.item()), "z_reg": float(z_reg.item()), "gnorm": float(gnorm)})
 
     epoch_loss = running / max(1, seen)
     train_losses.append(epoch_loss)
@@ -134,5 +137,11 @@ for epoch in range(epochs):
         save_checkpoint(model, os.path.join(output_dir, "SAE.pth"))
 
 history = {"train_total": train_losses}
+
+# Save config & history json
+with open(os.path.join(output_dir, "config.json"), "w") as f:
+    json.dump(config, f, indent=2)
 with open(os.path.join(output_dir, "history.json"), "w") as f:
     json.dump(history, f, indent=2)
+
+print(f"Training complete. Model and loss plot saved to {output_dir}")
