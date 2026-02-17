@@ -280,8 +280,7 @@ def LV_collate(batch, max_frames: int, augmentations=None, generator=None):
 
 
 def AE_collate(batch, max_frames, augmentations=None, time_jitter=False, generator=None):
-    in_vids, out_vids = [], []
-    in_tss, out_tss = [], []
+    vs, tss = [], []
 
     for s in batch:
         v = s["video"]        # [T, C, H, W] in [0, 1]
@@ -291,56 +290,36 @@ def AE_collate(batch, max_frames, augmentations=None, time_jitter=False, generat
 
         # Sampling
         if T <= max_frames:
-            in_idx = torch.randint(0, T, (max_frames,), device=device, generator=generator)
-            out_idx = torch.randint(0, T, (max_frames,), device=device, generator=generator)
+            idx = torch.randint(0, T, (max_frames,), device=device, generator=generator)
         else:
-            in_idx = torch.randperm(T, device=device, generator=generator)[:max_frames]
-            out_idx = torch.randperm(T, device=device, generator=generator)[:max_frames]
+            idx = torch.randperm(T, device=device, generator=generator)[:max_frames]
 
-        in_idx, _ = torch.sort(in_idx)
-        out_idx, _ = torch.sort(out_idx)
-
-        # in_idx interval is superset of out_idx
-        if in_idx[0] > out_idx[0]:
-            in_idx[0] = out_idx[0]
-        if in_idx[-1] < out_idx[-1]:
-            in_idx[-1] = out_idx[-1]
+        idx, _ = torch.sort(idx)  # keep temporal order
 
         # Gather frames/timestamps
-        in_v = v.index_select(0, in_idx)
-        out_v = v.index_select(0, out_idx)
-        in_ts = ts.index_select(0, in_idx)
-        out_ts = ts.index_select(0, out_idx)
+        v = v.index_select(0, idx)  # [max_frames, C, H, W]
+        ts = ts.index_select(0, idx) # [max_frames]
 
         # Shift timestamps to start at 0
-        t_start = in_ts[0].clone()
-        in_ts = in_ts - t_start
-        out_ts = out_ts - t_start
+        ts = ts - ts[0]
 
         if time_jitter: # ±0.25fps timestamp jitter for middle timestamps
             fps = s["metadata"]["FPS"]
-            in_ts[1:-1] = in_ts[1:-1] + (torch.rand_like(in_ts[1:-1]) - 0.5) * (0.5 / fps)
-            out_ts[1:-1] = out_ts[1:-1] + (torch.rand_like(out_ts[1:-1]) - 0.5) * (0.5 / fps)
+            ts[1:-1] = ts[1:-1] + (torch.rand_like(ts[1:-1]) - 0.5) * (0.5 / fps)
 
         # Augmentations (only on in_frames)
         if augmentations is not None:
-            in_v = augmentations(in_v)
+            v = augmentations(v)
 
-        in_vids.append(in_v)
-        out_vids.append(out_v)
-        in_tss.append(in_ts)
-        out_tss.append(out_ts)
+        vs.append(v)
+        tss.append(ts)
 
     # Stack
-    in_frames = torch.stack(in_vids, dim=0)        # [B, n, C, H, W]
-    out_frames = torch.stack(out_vids, dim=0)      # [B, n, C, H, W]
-    in_timestamps = torch.stack(in_tss, dim=0)     # [B, n]
-    out_timestamps = torch.stack(out_tss, dim=0)   # [B, n]
+    videos = torch.stack(vs, dim=0)       # [B, max_frames, C, H, W]
+    timestamps = torch.stack(tss, dim=0)  # [B, max_frames
 
     # Normalize to [-1, 1]
     return {
-        "in_frames": in_frames.mul_(2).sub_(1),
-        "out_frames": out_frames.mul_(2).sub_(1),
-        "in_timestamps": in_timestamps,
-        "out_timestamps": out_timestamps,
+        "videos": videos.mul_(2).sub_(1),
+        "timestamps": timestamps,
     }

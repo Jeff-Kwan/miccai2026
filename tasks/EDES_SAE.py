@@ -16,7 +16,7 @@ from scipy.signal import find_peaks
 from sklearn.decomposition import PCA
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_16/16_46_SAE"
+load_dir = "results/2026_02_17/12_03_SAE"
 
 # ---- Model ----
 config = json.load(open("config/SAE.json", "r"))

@@ -107,15 +107,13 @@ for epoch in range(epochs):
 
     pbar = tqdm(train_dl, desc=f"Epoch {epoch+1}/{epochs}")
     for batch in pbar:
-        in_frames = batch["in_frames"].to(device, non_blocking=True)
-        out_frames = batch["out_frames"].to(device, non_blocking=True)
-        in_timestamps = batch["in_timestamps"].to(device, non_blocking=True)
-        out_timestamps = batch["out_timestamps"].to(device, non_blocking=True)
+        videos = batch["videos"].to(device, non_blocking=True)           
+        timestamps = batch["timestamps"].to(device, non_blocking=True)
 
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast('cuda', dtype=torch.bfloat16, enabled=autocast):
-            recon, z_in, z_out = model.forward_spline(in_frames, in_timestamps, out_timestamps)
-            loss = criterion(recon, out_frames)
+            recon, z_in, z_out = model.forward_spline(videos, timestamps, timestamps)
+            loss = criterion(recon, videos)
 
         loss.backward()
         gnorm = nn.utils.clip_grad_norm_(model.parameters(), grad_clip)

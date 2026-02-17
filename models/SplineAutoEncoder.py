@@ -33,7 +33,9 @@ class Upsample(nn.Module):
         self.up = nn.Sequential(
             nn.Upsample(scale_factor=2, mode="nearest"),
             nn.Conv2d(in_ch, out_ch, 3, 1, 1),
-            nn.GroupNorm(4, out_ch))
+            nn.GroupNorm(4, out_ch),
+            nn.GELU(),
+            nn.Conv2d(out_ch, out_ch, 3, 1, 1))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.up(x)
@@ -92,17 +94,11 @@ class SimpleConvDecoder(nn.Module):
 
         self.decoder = nn.Sequential(
             nn.ConvTranspose2d(latent, base, 2, 2, 0),     # 1 -> 2
-            ResBlock(base),
             Upsample(base,      base // 2),                # 2 -> 4
-            ResBlock(base // 2),
             Upsample(base // 2, base // 4),                # 4 -> 8
-            ResBlock(base // 4),
             Upsample(base // 4, base // 8),                # 8 -> 16
-            ResBlock(base // 8),
             Upsample(base // 8, base // 16),               # 16 -> 32
-            ResBlock(base // 16),
             Upsample(base // 16, base // 32),              # 32 -> 64
-            ResBlock(base // 32),
             nn.Conv2d(base // 32, out_dim, kernel_size=3, padding=1),
         )
 

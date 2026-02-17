@@ -18,7 +18,7 @@ from utils.filters import highpass, SavGolFilterTime
 from dreimac import CircularCoords
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_16/16_46_SAE"
+load_dir = "results/2026_02_17/12_03_SAE"
 ph_dir = os.path.join(load_dir, "topology")
 os.makedirs(ph_dir, exist_ok=True)
 
@@ -39,7 +39,7 @@ autocast = config["training"].get("autocast", False)
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
 
-idx = 173#random.randint(0, len(val_ds) - 1)
+idx = 998#random.randint(0, len(val_ds) - 1)
 video = val_ds[idx]['video'].to(device).unsqueeze(0)
 video = video * 2 - 1  # [0,1] → [-1,1]
 timestamps = val_ds[idx]['timestamps'].unsqueeze(0).to(device)
