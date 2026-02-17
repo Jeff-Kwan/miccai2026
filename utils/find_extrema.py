@@ -4,11 +4,11 @@ from scipy.signal import find_peaks, savgol_filter
 from scipy.signal import butter, filtfilt
 
 
-def highpass_filter(signal, fs, cutoff=0.5, order=4):
+def highpass_filter(signal, fs, cutoff=0.5, order=4, axis=0):
     nyquist = 0.5 * fs
     normal_cutoff = cutoff / nyquist
     b, a = butter(order, normal_cutoff, btype="high", analog=False)
-    filtered = filtfilt(b, a, signal)
+    filtered = filtfilt(b, a, signal, axis=axis)
     return filtered
 
 
