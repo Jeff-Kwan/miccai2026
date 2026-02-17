@@ -253,52 +253,65 @@ class SplineAutoEncoder(nn.Module):
     # Spline fit + eval
     # -------------------------
 
-    def spline_fit_and_eval(
-        self,
-        z_in: torch.Tensor,      # (B, T_in, latent)
-        t_in: torch.Tensor,      # (B, T_in)
-        t_out: torch.Tensor,     # (B, T_out)
-    ) -> torch.Tensor:
+    def spline_fit(self, z_in: torch.Tensor, t_in: torch.Tensor):
         """
-        Fit spline to z_in over t_in and evaluate at t_out.
-        Spline math always runs in fp32 regardless of autocast state.
+        Fit spline control points for z_in over t_in.
+
+        Returns:
+        P32:   (B, n_ctrl, latent)   fp32
+        knots: (B, n_ctrl + degree + 1) fp32
+        t0,t1: (B, 1) fp32  (normalization stats)
         """
-        orig_dtype = z_in.dtype
         device = z_in.device
-
-        # Force fp32 math for numerical stability
         with autocast('cuda', enabled=False):
-            z_in32 = z_in.float()
-            t_in32 = t_in.float()
-            t_out32 = t_out.float()
+            z32 = z_in.float()
+            t32 = t_in.float()
 
-            # Normalize time to [0, 1] for better conditioning (knots are in this range)
-            t0 = torch.cat([t_in32, t_out32], dim=1).min(dim=1, keepdim=True).values
-            t1 = torch.cat([t_in32, t_out32], dim=1).max(dim=1, keepdim=True).values
-            t_in32 = (t_in32 - t0) / (t1 - t0 + self.eps)
-            t_out32 = (t_out32 - t0) / (t1 - t0 + self.eps)
+            # normalize t_in to [0,1]
+            t0 = t32.min(dim=1, keepdim=True).values
+            t1 = t32.max(dim=1, keepdim=True).values
+            t_n = (t32 - t0) / (t1 - t0 + self.eps)
 
-            knots = self.make_clamped_uniform_knots(t_in32, self.degree, self.n_ctrl)
-
-            A  = self.bspline_basis(t_in32,  knots, self.degree, eps=self.eps)
-            Aq = self.bspline_basis(t_out32, knots, self.degree, eps=self.eps)
+            knots = self.make_clamped_uniform_knots(t_n, self.degree, self.n_ctrl)
+            A = self.bspline_basis(t_n, knots, self.degree, eps=self.eps)
 
             At = A.transpose(1, 2)
             AtA = At @ A
-            AtZ = At @ z_in32
+            AtZ = At @ z32
 
-            DtD = self.second_difference_gram(
-                self.n_ctrl, device=device, dtype=torch.float32
-            )
-
+            DtD = self.second_difference_gram(self.n_ctrl, device=device, dtype=torch.float32)
             lhs = AtA + self.lam * DtD[None, :, :]
 
-            P = torch.linalg.solve(lhs, AtZ)
+            P32 = torch.linalg.solve(lhs, AtZ)
 
-            z_out32 = Aq @ P
+        return P32, knots, t0, t1
 
-        # Return to original dtype for the rest of the network
-        return z_out32.to(orig_dtype)
+
+    def spline_eval(
+        self,
+        P32: torch.Tensor,          # (B, n_ctrl, latent) fp32
+        knots: torch.Tensor,        # (B, K) fp32
+        t: torch.Tensor,            # (B, T) (any dtype)
+        t0: torch.Tensor,           # (B, 1) fp32
+        t1: torch.Tensor,           # (B, 1) fp32
+        out_dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """Evaluate a fitted spline at timestamps t."""
+        with autocast('cuda', enabled=False):
+            t32 = t.float()
+            t_n = (t32 - t0) / (t1 - t0 + self.eps)
+            Aq = self.bspline_basis(t_n, knots, self.degree, eps=self.eps)
+            z_out32 = Aq @ P32
+        return z_out32.to(out_dtype)
+
+
+    def spline_fit_and_eval(self, z_in: torch.Tensor, t_in: torch.Tensor, t_out: torch.Tensor) -> torch.Tensor:
+        """
+        For inference.
+        """
+        P32, knots, t0, t1 = self.spline_fit(z_in, t_in)
+        return self.spline_eval(P32, knots, t_out, t0, t1, out_dtype=z_in.dtype)
+
 
     def forward(
         self,
@@ -309,18 +322,26 @@ class SplineAutoEncoder(nn.Module):
         """
         Returns:
           recon_out: (B, T_out, C, H, W)
-          z_reg:     L1 regularization term
+          z_reg:     L2 regularization term
         """
         _, _, _, H, W = in_frames.shape
 
+        # Autoencoder
         z_in = self.encode(in_frames)
-        z_out = self.spline_fit_and_eval(
-            z_in=z_in,
-            t_in=in_timestamps,
-            t_out=out_timestamps)
-        z_reg = (z_in - z_out).pow(2).sum(dim=-1).mean()  # L2 Regularization
+
+        # Spline Fit
+        P32, knots, t0, t1 = self.spline_fit(z_in, in_timestamps)
+
+        # Eval & Decode
+        z_out = self.spline_eval(P32, knots, out_timestamps, t0, t1, out_dtype=z_in.dtype)
         recon_out = self.decode(z_out, H=H, W=W)
+
+        # Eval & L2 Regularize
+        z_in_spline = self.spline_eval(P32, knots, in_timestamps, t0, t1, out_dtype=z_in.dtype)
+        z_reg = (z_in - z_in_spline).pow(2).sum(dim=-1).mean()
+
         return recon_out, z_reg
+
 
 
 if __name__ == "__main__":
@@ -330,6 +351,7 @@ if __name__ == "__main__":
     B, T, C, H, W = 32, 64, 3, 112, 112
 
     x = torch.randn(B, T, C, H, W, device=device)
+    timestamps = torch.linspace(0, 1, steps=T, device=device).unsqueeze(0).repeat(B, 1)
     model = SplineAutoEncoder(latent=latent, in_dim=C).to(device)
 
     # Profile memory usage
@@ -347,7 +369,7 @@ if __name__ == "__main__":
         record_shapes=True,
         with_flops=True,
     ) as prof:
-        recon, z = model(x)
+        recon, z = model(x, timestamps, timestamps)
 
     print(prof.key_averages().table(sort_by=f"self_{device}_memory_usage", row_limit=8))
 
