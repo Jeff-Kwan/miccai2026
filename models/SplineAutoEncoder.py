@@ -318,7 +318,7 @@ class SplineAutoEncoder(nn.Module):
             z_in=z_in,
             t_in=in_timestamps,
             t_out=out_timestamps)
-        z_reg = (z_in - z_out).abs().sum(dim=-1).mean()  # L1 Regularization
+        z_reg = (z_in - z_out).pow(2).sum(dim=-1).mean()  # L2 Regularization
         recon_out = self.decode(z_out, H=H, W=W)
         return recon_out, z_reg
 

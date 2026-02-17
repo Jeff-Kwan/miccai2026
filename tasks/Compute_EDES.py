@@ -102,7 +102,7 @@ if __name__ == "__main__":
     # parser.add_argument("--load_dir", type=str, required=True, help="Directory to load the trained Spline AutoEncoder model from.")
     # args = parser.parse_args()
     # load_dir = args.load_dir
-    load_dir = "results/2026_02_17/17_57_SAE"
+    load_dir = "results/2026_02_17/18_10_SAE"
 
     print("Starting ED/ES evaluation...")
     # ---- Model ----
