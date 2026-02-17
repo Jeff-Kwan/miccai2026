@@ -20,9 +20,9 @@ os.makedirs(output_dir, exist_ok=True)
 
 config = json.load(open("config/VMAE.json", "r"))
 max_frames = config["training"]["max_frames"]
-epochs = 60
-batch_size = 16
-lr = 3e-4
+epochs = 200
+batch_size = 32
+lr = 1e-4
 weight_decay = 1e-3
 dropout = 0.1
 torch_compile = False
@@ -39,13 +39,13 @@ autocast = config["training"]["autocast"]
 
 enc = list(probe.encoder.parameters())
 optimizer = torch.optim.AdamW([
-    {"params": enc, "lr": lr/4, "weight_decay": weight_decay/4},
+    {"params": enc, "lr": lr/10, "weight_decay": weight_decay/10},
     {"params": [p for p in probe.parameters() if id(p) not in {id(p) for p in enc}],
      "lr": lr, "weight_decay": weight_decay}])
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 mse = nn.MSELoss()
 l1 = nn.L1Loss()
-smoothl1 = nn.SmoothL1Loss(beta=0.1)
+smoothl1 = nn.SmoothL1Loss(beta=0.2)
 
 # Dataset
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=False)

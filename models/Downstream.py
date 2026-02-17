@@ -73,7 +73,7 @@ class LV_Segmentation(nn.Module):
 
         # Unpatchify and reassemble
         h, w = H // self.encoder.cfg.patch, W // self.encoder.cfg.patch
-        pred = pred.view(B, T, h, w, self.encoder.cfg.patch, self.encoder.cfg.patch, self.out_c)
+        pred = pred.reshape(B, T, h, w, self.encoder.cfg.patch, self.encoder.cfg.patch, self.out_c)
         pred = pred.permute(0, 1, 6, 2, 4, 3, 5).reshape(B, T, self.out_c, H, W)
         # patches = patches.permute(0, 1, 3, 2).reshape(B*T, D, h, w)
         # pred = self.conv_out(patches).reshape(B, T, self.out_c, H, W)

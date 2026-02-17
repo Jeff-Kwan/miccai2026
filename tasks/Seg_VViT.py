@@ -33,9 +33,9 @@ output_dir = os.path.join(load_dir, "LVSeg")
 os.makedirs(output_dir, exist_ok=True)
 
 # Training Parameters
-epochs = 60
-batch_size = 16
-lr = 3e-4
+epochs = 200
+batch_size = 32
+lr = 1e-4
 weight_decay = 1e-3
 dropout = 0.1
 frames = config["training"]["max_frames"]
