@@ -11,3 +11,4 @@ scikit-learn
 scikit-image
 ripser
 dreimac
+h5py
