@@ -74,6 +74,7 @@ use_aug = bool(config["training"].get("use_augmented_input", True))
 
 criterion = nn.MSELoss()
 train_losses: list[float] = []
+z_regs: list[float] = []
 
 trainable_m = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
 print(f"SplineAutoEncoder: {trainable_m:.2f}M trainable parameters")
@@ -86,11 +87,16 @@ def save_checkpoint(model: nn.Module, path: str) -> None:
     else:
         torch.save(model.state_dict(), path)
 
-def save_loss_plot(losses: list[float], path: str) -> None:
+def save_loss_plot(losses: list[float], z_regs: list[float], path: str) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     x = range(1, len(losses) + 1)
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.plot(x, losses, label="Train Loss")
+    ax2 = ax.twinx()
+    ax2.plot(x, z_regs, label="Z Reg", color="orange")
+    ax2.set_ylabel("Z Regularization")
+    ax.legend(loc="upper left")
+    ax2.legend(loc="upper right")
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Loss")
     ax.set_yscale("log")
@@ -103,6 +109,7 @@ def save_loss_plot(losses: list[float], path: str) -> None:
 for epoch in range(epochs):
     model.train()
     running = 0.0
+    z_reg_running = 0.0
     seen = 0
 
     pbar = tqdm(train_dl, desc=f"Epoch {epoch+1}/{epochs}")
@@ -123,20 +130,23 @@ for epoch in range(epochs):
         optimizer.step()
 
         running += loss.item() * config["training"]["batch_size"]
+        z_reg_running += z_reg.item() * config["training"]["batch_size"]
         seen += config["training"]["batch_size"]
         pbar.set_postfix({"Recon": float(recon_loss.item()), "z_reg": float(z_reg.item()), "gnorm": float(gnorm)})
 
     epoch_loss = running / max(1, seen)
+    epoch_z_reg = z_reg_running / max(1, seen)
     train_losses.append(epoch_loss)
+    z_regs.append(epoch_z_reg)
     scheduler.step()
 
-    print(f"Epoch {epoch+1}/{epochs} - loss: {epoch_loss:.6f}")
+    print(f"Epoch {epoch+1}/{epochs} - loss: {epoch_loss:.6f} - z_reg: {epoch_z_reg:.6f}")
 
     if save_every:
-        save_loss_plot(train_losses, os.path.join(output_dir, "losses.png"))
+        save_loss_plot(train_losses, z_regs, os.path.join(output_dir, "losses.png"))
         save_checkpoint(model, os.path.join(output_dir, "SAE.pth"))
 
-history = {"train_total": train_losses}
+history = {"train_total": train_losses, "z_reg": z_regs}
 
 # Save config & history json
 with open(os.path.join(output_dir, "config.json"), "w") as f:

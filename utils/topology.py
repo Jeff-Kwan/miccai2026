@@ -4,6 +4,7 @@ import numpy as np
 from sklearn.decomposition import PCA
 from scipy.signal import butter, filtfilt, savgol_filter
 from sklearn.cross_decomposition import PLSRegression
+from sklearn.neighbors import LocalOutlierFactor
 from dreimac import CircularCoords
 
 #####
@@ -17,48 +18,82 @@ def highpass_filter(signal, fs, cutoff=0.5, order=4, axis=0):
     filtered = filtfilt(b, a, signal, axis=axis)
     return filtered
 
+def robust_z(z):
+    # Dimensionality Reduction
+    pca = PCA(n_components=0.98)
+    z_reduced = pca.fit_transform(z)
+
+    '''
+    Linearly Detrend each PCA independently...?
+    '''
+
+    # LoF Robust Inliers
+    lof = LocalOutlierFactor(n_neighbors=15)
+    _ = lof.fit_predict(z_reduced)
+    lof_score = lof.negative_outlier_factor_
+    mask = lof_score > np.quantile(lof_score, 0.02)
+    fit_idx  = np.flatnonzero(mask)
+    hold_idx = np.flatnonzero(~mask)
+    # print(f"LOF: Keeping {len(fit_idx)} inliers, holding out {len(hold_idx)} points")
+    return fit_idx, hold_idx
+
 
 #####
 # Topological
 #####
 
 def cohomology_circular_coords(
-        z: np.ndarray, fps: int, 
-        savgol: bool = False, highpass: bool = True, pca: bool = True,
+        z: np.ndarray, fps: int,
         print_dgms_summary: bool = False):
     '''
     Extracts circular coordinates from the latent trajectory z using persistent cohomology.
     z: [T, D] numpy array
     fps: Frames per second of the signal
-    savgol: Whether to apply Savitzky-Golay filter
-    highpass: Whether to apply high-pass filter
-    pca: Whether to apply PCA
     print_dgms_summary: Whether to print a summary of the persistence diagrams
     '''
     assert z.ndim == 2, "z should be a 2D array of shape [T, D]"
 
-    if savgol:
-        z = savgol_filter(z, window_length=11, polyorder=3, axis=0)
-    if highpass:
-        z = highpass_filter(z, fs=fps, cutoff=0.5, order=2, axis=0)
-    if pca:
-        pca_op = PCA(n_components=0.95)
-        z = pca_op.fit_transform(z)
+    # Center z
+    z = z - z.mean(axis=0, keepdims=True)
 
-    cc = CircularCoords(z, n_landmarks=min(len(z), 1000))
+    # Filters
+    # z = savgol_filter(z, window_length=11, polyorder=3, axis=0)
+    z = highpass_filter(z, fs=fps, cutoff=0.5, order=4, axis=0)
+
+    # Robustly identify inlier points for circular coordinate fitting
+    fit_idx, hold_idx = robust_z(z)
+    z_fit = z[fit_idx]
+    z_hold = z[hold_idx] if len(hold_idx) > 0 else None
+
+    # PCA according to z_fit
+    pca = PCA(n_components=0.99)
+    z_fit = pca.fit_transform(z_fit)
+    z_hold = pca.transform(z_hold) if len(hold_idx) > 0 else None
+
+    # Build rectangular distance matrix:
+    if len(hold_idx) == 0:
+        D_fit_fit = np.linalg.norm(z_fit[:, None, :] - z_fit[None, :, :], axis=-1)  # (N_fit, N_fit)
+        D_rect = D_fit_fit
+    else:
+        D_fit_fit = np.linalg.norm(z_fit[:, None, :] - z_fit[None, :, :], axis=-1)      # (N_fit, N_fit)
+        D_fit_hold = np.linalg.norm(z_fit[:, None, :] - z_hold[None, :, :], axis=-1)    # (N_fit, N_hold)
+        D_rect = np.hstack([D_fit_fit, D_fit_hold])                                     # (N_fit, N_all)
+
+    # Fit circular coords using only fit subset, but assign to all columns
+    cc = CircularCoords(D_rect, n_landmarks=len(fit_idx), distance_matrix=True)
     try:
-        phase = cc.get_coordinates(perc=0.95)
+        phase = cc.get_coordinates(perc=0.9)
     except Exception as e:
-        print(f"Error in computing circular coordinates: {e}")
-        phase = cc.get_coordinates(perc=0.95, standard_range=False)
+        print(f"Error: {e}")
+        phase = cc.get_coordinates(standard_range=False)
     dgms = cc.dgms_
 
     if print_dgms_summary:
         if len(dgms) > 1:
             h1_dgm = dgms[1]
             persistences = h1_dgm[:, 1] - h1_dgm[:, 0]
-            top_indices = np.argsort(persistences)[-5:][::-1]
-            print("5 largest H1 persistences:")
+            top_indices = np.argsort(persistences)[-3:][::-1]
+            print("3 largest H1 persistences:")
             for index in top_indices:
                 birth, death = h1_dgm[index]
                 persistence = death - birth
@@ -73,16 +108,22 @@ def project_to_principal_plane(z: np.ndarray, phase: np.ndarray):
     z: [T, D] numpy array
     phase: [T,] numpy array of circular coordinates (in radians)
     '''
+    fit_idx, _ = robust_z(z)
+    z_fit = z[fit_idx]
+    phase_fit = phase[fit_idx]
     pls = PLSRegression(n_components=2)
-    pls.fit(z, np.column_stack((np.sin(phase), np.cos(phase))))
+    pls.fit(z_fit, np.column_stack((np.sin(phase_fit), np.cos(phase_fit))))
     z_2d = pls.transform(z)
     return z_2d
 
 
 def find_phase_major_axis(z: np.ndarray, phase: np.ndarray):
-    Y = np.column_stack([np.sin(phase), np.cos(phase)])  # (N,2)
+    fit_idx, _ = robust_z(z)
+    z_fit = z[fit_idx]
+    phase_fit = phase[fit_idx]
+    Y = np.column_stack([np.sin(phase_fit), np.cos(phase_fit)])  # (N,2)
     pls = PLSRegression(n_components=2)
-    pls.fit(Y, z)
+    pls.fit(Y, z_fit)
     C = pls.coef_
     if C.shape[0] == 2:
         C = C.T  # (D, 2)
@@ -164,6 +205,7 @@ def plot_phase_and_time(phase: np.ndarray, timestamps: np.ndarray, out_dir: str,
         ax.set_ylabel("Phase")
         ax.set_yticks([0, np.pi, 2*np.pi])
         ax.set_yticklabels(['0', 'π', '2π'])
+        
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, f"{index}-phase_time-{differentiate}xdiff.png"), dpi=200)
     plt.clf()

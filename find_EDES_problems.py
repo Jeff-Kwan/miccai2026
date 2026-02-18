@@ -1,0 +1,79 @@
+import os, sys
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+import torch
+from torch.utils.data import DataLoader
+from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
+from datahandling.collate import EDES_collate
+from models.SplineAutoEncoder import SplineAutoEncoder
+import os
+import numpy as np
+from tqdm import tqdm
+import json
+from math import ceil
+from tasks.Compute_EDES import EDES_via_Phase
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+load_dir = "results/2026_02_17/18_35_SAE"
+
+# ---- Model ----
+config = json.load(open("config/SAE.json", "r"))
+mcfg = config["model"]
+model = SplineAutoEncoder(
+    latent=mcfg["latent"],
+    in_dim=mcfg.get("in_dim", 3),
+    out_dim=mcfg.get("out_dim", None),
+    n_ctrl=ceil(config["training"]["max_frames"]//3)+3,
+    degree=3,
+    lam=1e-3,
+).to(device)
+
+model.load_state_dict(torch.load(os.path.join(load_dir, "SAE.pth"), map_location=device))
+autocast = config["training"].get("autocast", False)
+model = model.to(device).eval()
+
+# ---- Dataset ----
+train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
+
+dl = DataLoader(
+    test_ds,
+    batch_size=1,
+    shuffle=False,
+    collate_fn=EDES_collate,
+    num_workers=24,
+    pin_memory=True
+)
+
+### Run
+problems = {}
+with torch.inference_mode():
+    for i, batch in tqdm(enumerate(dl)):
+        videos, timestamps, frames_idx, fps = batch
+        gt_es, gt_ed = frames_idx[0]
+        fps = float(fps[0])
+        gt_es = int(gt_es.item())
+        gt_ed = int(gt_ed.item())
+
+        videos = videos.to(device, non_blocking=True)
+        timestamps = timestamps.to(device, non_blocking=True)
+
+        with torch.autocast('cuda', torch.bfloat16, enabled=autocast):
+            z = model.encode(videos)
+            z_spline = model.spline_fit_and_eval(z, timestamps, timestamps)
+        z_np = (z - z.mean(dim=1, keepdim=True)).squeeze(0).cpu().numpy()
+        z_spline_np = (z_spline - z_spline.mean(dim=1, keepdim=True)).squeeze(0).cpu().numpy()
+        timestamps_np = timestamps.squeeze(0).cpu().numpy()
+        try:
+            EDES_via_Phase(z_np, z_spline_np, timestamps_np, fps, gt_ed, gt_es)
+        except Exception as e:
+            print("!!!!!")
+            print(f"Sample index {i}: Video Length {videos.size(1)} - Error in computing circular coordinates: {e}")
+            print("!!!!!")
+            key = (type(e).__name__, str(e))
+            if key not in problems:
+                problems[key] = [i]
+            else:
+                problems[key].append(i)
+
+print("\nSummary of problems encountered:")
+for error, indices in problems.items():
+    print(f"Error: {error} - Occurred in samples: {indices}")

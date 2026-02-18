@@ -287,19 +287,15 @@ def AE_collate(batch, max_frames, augmentations=None, time_jitter=False, generat
         v = s["video"]        # [T, C, H, W] in [0, 1]
         ts = s["timestamps"]  # [T] in seconds
         T = v.shape[0]
-        device = v.device
 
         # Sampling
-        if T <= max_frames*2:
-            in_idx = torch.randint(0, T, (max_frames,), device=device, generator=generator)
-            out_idx = torch.randint(0, T, (max_frames,), device=device, generator=generator)
-    
+        if T < max_frames:
+            k = max_frames - T
+            in_idx = torch.cat([torch.arange(T), torch.randint(0, T, (k,), generator=generator)])
+            out_idx = torch.cat([torch.arange(T), torch.randint(0, T, (k,), generator=generator)])
         else:
-            start = torch.randint(0, T - max_frames*2, (1,), device=device, generator=generator)
-            perm = torch.randperm(max_frames*2-2, device=device, generator=generator)
-            interior = start + 1 + perm
-            in_idx  = torch.cat([start, interior[:max_frames-2], start + 2*max_frames - 1])
-            out_idx = interior[max_frames-2:]
+            in_idx  = torch.randperm(T, generator=generator)[:max_frames]
+            out_idx = torch.randperm(T, generator=generator)[:max_frames]
 
         in_idx, _ = torch.sort(in_idx)
         out_idx, _ = torch.sort(out_idx)

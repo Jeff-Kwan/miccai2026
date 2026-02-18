@@ -13,7 +13,7 @@ import json
 from math import ceil
 from scipy.signal import find_peaks
 from utils.find_extrema import compute_main_orientation_and_extrema
-from utils.topology import cohomology_circular_coords, find_phase_major_axis, plot_phase_major_axis
+from utils.topology import cohomology_circular_coords, find_phase_major_axis, project_to_principal_plane
 
 # NEW
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -39,15 +39,16 @@ def EDES_via_Norm(z, z_spline, timestamps, fps, gt_ed, gt_es):
 def EDES_via_Phase(z, z_spline, timestamps, fps, gt_ed, gt_es):
     phase, dgms = cohomology_circular_coords(
         z_spline, fps=fps,
-        savgol=False, highpass=False, pca=True,
         print_dgms_summary=False)
-    major_axis = find_phase_major_axis(z, phase)
+    # Plane only likely to work if loop is prominent
+    # z_spline = project_to_principal_plane(z_spline, phase)
+    # radii = np.linalg.norm(z_spline - np.mean(z_spline, axis=0), axis=-1)
+    # group = find_peaks(radii, prominence=0.3*(np.max(radii)-np.min(radii)))[0]
+    major_axis = find_phase_major_axis(z_spline, phase)
     z_proj = z_spline @ major_axis
-    group1 = find_peaks(z_proj, prominence=0.5*np.std(z_proj))[0]
-    group2 = find_peaks(-z_proj, prominence=0.5*np.std(z_proj))[0]
+    group1 = find_peaks(z_proj, prominence=0.2*(np.max(z_proj)-np.min(z_proj)))[0]
+    group2 = find_peaks(-z_proj, prominence=0.2*(np.max(z_proj)-np.min(z_proj)))[0]
     group = np.concatenate([group1, group2])
-    if len(group) < 2:
-        group = np.concatenate([group, [np.max(group)], [np.min(group)]])
     ed_err = np.min(np.abs(group - gt_ed))
     es_err = np.min(np.abs(group - gt_es))
     return ed_err, es_err
