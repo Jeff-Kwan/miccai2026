@@ -47,7 +47,7 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
     optimizer, T_max=config["training"]["epochs"])
 
 
-train_ds, _, _ = load_echonet_dynamic_datasets(get_mask=False)
+train_ds, val_ds, _ = load_echonet_dynamic_datasets(get_mask=False)
 
 train_dl = DataLoader(
     train_ds,
@@ -62,8 +62,22 @@ train_dl = DataLoader(
         x,
         max_frames=config["training"]["max_frames"],
         augmentations=get_pretrain_augmentations() if config["training"]["augmentations"] else None,
-        time_jitter=config["training"]["time_jitter"],
     ),
+)
+
+val_dl = DataLoader(
+    val_ds,
+    batch_size=config["training"]["batch_size"],
+    shuffle=True,
+    drop_last=True,
+    num_workers=30,
+    pin_memory=True,
+    persistent_workers=True,
+    prefetch_factor=2,
+    collate_fn=lambda x: AE_collate(
+        x,
+        max_frames=config["training"]["max_frames"],
+        augmentations=None)
 )
 
 epochs = int(config["training"]["epochs"])
@@ -73,8 +87,12 @@ save_every = bool(config["training"].get("save_every_epoch", True))
 use_aug = bool(config["training"].get("use_augmented_input", True))
 
 criterion = nn.MSELoss()
+
+# --- CHANGED: track train + val recon and z_reg separately ---
 train_losses: list[float] = []
 z_regs: list[float] = []
+val_losses: list[float] = []
+val_z_regs: list[float] = []
 
 trainable_m = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
 print(f"SplineAutoEncoder: {trainable_m:.2f}M trainable parameters")
@@ -87,26 +105,48 @@ def save_checkpoint(model: nn.Module, path: str) -> None:
     else:
         torch.save(model.state_dict(), path)
 
-def save_loss_plot(losses: list[float], z_regs: list[float], path: str) -> None:
+# --- CHANGED: plot train solid, val dotted; recon blue, reg orange ---
+def save_loss_plot(
+    train_losses: list[float],
+    train_z_regs: list[float],
+    val_losses: list[float],
+    val_z_regs: list[float],
+    path: str
+) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    x = range(1, len(losses) + 1)
+    x_tr = range(1, len(train_losses) + 1)
+    x_va = range(1, len(val_losses) + 1)
+
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.plot(x, losses, label="Train Loss")
-    ax2 = ax.twinx()
-    ax2.plot(x, z_regs, label="Z Reg", color="orange")
-    ax2.set_ylabel("Z Regularization")
-    ax.legend(loc="upper left")
-    ax2.legend(loc="upper right")
+
+    # Recon (blue)
+    ax.plot(x_tr, train_losses, label="Train Recon", color="blue", linestyle="-")
+    if len(val_losses) > 0:
+        ax.plot(x_va, val_losses, label="Val Recon", color="blue", linestyle=":")
+
     ax.set_xlabel("Epoch")
-    ax.set_ylabel("Loss")
+    ax.set_ylabel("Reconstruction Loss")
     ax.set_yscale("log")
-    ax.legend()
+
+    # Z reg (orange) on twin axis
+    ax2 = ax.twinx()
+    ax2.plot(x_tr, train_z_regs, label="Train Z Reg", color="orange", linestyle="-")
+    if len(val_z_regs) > 0:
+        ax2.plot(x_va, val_z_regs, label="Val Z Reg", color="orange", linestyle=":")
+    ax2.set_ylabel("Z Regularization")
+
+    # Combine legends from both axes
+    lines = ax.get_lines() + ax2.get_lines()
+    labels = [l.get_label() for l in lines]
+    ax.legend(lines, labels, loc="best")
+
     plt.tight_layout()
     plt.savefig(path, bbox_inches="tight")
     plt.close(fig)
 
 
 for epoch in range(epochs):
+    # -------------------- TRAIN --------------------
     model.train()
     running = 0.0
     z_reg_running = 0.0
@@ -129,7 +169,7 @@ for epoch in range(epochs):
         gnorm = nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
 
-        running += loss.item() * config["training"]["batch_size"]
+        running += recon_loss.item() * config["training"]["batch_size"]
         z_reg_running += z_reg.item() * config["training"]["batch_size"]
         seen += config["training"]["batch_size"]
         pbar.set_postfix({"Recon": float(recon_loss.item()), "z_reg": float(z_reg.item()), "gnorm": float(gnorm)})
@@ -140,13 +180,56 @@ for epoch in range(epochs):
     z_regs.append(epoch_z_reg)
     scheduler.step()
 
-    print(f"Epoch {epoch+1}/{epochs} - loss: {epoch_loss:.6f} - z_reg: {epoch_z_reg:.6f}")
+    # -------------------- VAL (NEW) --------------------
+    model.eval()
+    val_running = 0.0
+    val_z_reg_running = 0.0
+    val_seen = 0
+
+    with torch.no_grad():
+        vbar = tqdm(val_dl, desc=f"Val {epoch+1}/{epochs}", leave=False)
+        for batch in vbar:
+            in_frames = batch["in_frames"].to(device)
+            in_timestamps = batch["in_timestamps"].to(device)
+            out_frames = batch["out_frames"].to(device)
+            out_timestamps = batch["out_timestamps"].to(device)
+
+            with torch.autocast('cuda', dtype=torch.bfloat16, enabled=autocast):
+                recon, z_reg = model(in_frames, in_timestamps, out_timestamps)
+                recon_loss = criterion(recon, out_frames)
+                val_loss = recon_loss + config["training"]["reg"] * z_reg
+
+            val_running += recon_loss.item() * config["training"]["batch_size"]
+            val_z_reg_running += z_reg.item() * config["training"]["batch_size"]
+            val_seen += config["training"]["batch_size"]
+            vbar.set_postfix({"Recon": float(recon_loss.item()), "z_reg": float(z_reg.item())})
+
+    epoch_val_loss = val_running / max(1, val_seen)
+    epoch_val_z_reg = val_z_reg_running / max(1, val_seen)
+    val_losses.append(epoch_val_loss)
+    val_z_regs.append(epoch_val_z_reg)
+
+    print(
+        f"Epoch {epoch+1}/{epochs} "
+        f"- train loss: {epoch_loss:.6f} - train z_reg: {epoch_z_reg:.6f} "
+        f"- val loss: {epoch_val_loss:.6f} - val z_reg: {epoch_val_z_reg:.6f}"
+    )
 
     if save_every:
-        save_loss_plot(train_losses, z_regs, os.path.join(output_dir, "losses.png"))
+        save_loss_plot(
+            train_losses, z_regs,
+            val_losses, val_z_regs,
+            os.path.join(output_dir, "losses.png")
+        )
         save_checkpoint(model, os.path.join(output_dir, "SAE.pth"))
 
-history = {"train_total": train_losses, "z_reg": z_regs}
+# --- CHANGED: include val in history ---
+history = {
+    "train_total": train_losses,
+    "z_reg": z_regs,
+    "val_total": val_losses,
+    "val_z_reg": val_z_regs,
+}
 
 # Save config & history json
 with open(os.path.join(output_dir, "config.json"), "w") as f:

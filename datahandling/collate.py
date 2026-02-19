@@ -279,7 +279,7 @@ def LV_collate(batch, max_frames: int, augmentations=None, generator=None):
 
 
 
-def AE_collate(batch, max_frames, augmentations=None, time_jitter=False, generator=None):
+def AE_collate(batch, max_frames, augmentations=None, generator=None):
     in_vids, out_vids = [], []
     in_tss, out_tss = [], []
 
@@ -293,9 +293,13 @@ def AE_collate(batch, max_frames, augmentations=None, time_jitter=False, generat
             k = max_frames - T
             in_idx = torch.cat([torch.arange(T), torch.randint(0, T, (k,), generator=generator)])
             out_idx = torch.cat([torch.arange(T), torch.randint(0, T, (k,), generator=generator)])
-        else:
+        elif T < max_frames*2:
             in_idx  = torch.randperm(T, generator=generator)[:max_frames]
             out_idx = torch.randperm(T, generator=generator)[:max_frames]
+        else:
+            perm = torch.randperm(T, generator=generator)
+            in_idx = perm[:max_frames]
+            out_idx = perm[max_frames:max_frames*2]
 
         in_idx, _ = torch.sort(in_idx)
         out_idx, _ = torch.sort(out_idx)
@@ -312,10 +316,6 @@ def AE_collate(batch, max_frames, augmentations=None, time_jitter=False, generat
         t_start = in_ts[0].clone()
         in_ts = in_ts - t_start
         out_ts = out_ts - t_start
-
-        if time_jitter: # ±0.25fps timestamp jitter for middle timestamps, only on out_ts
-            fps = s["metadata"]["FPS"]
-            out_ts[1:-1] = out_ts[1:-1] + (torch.rand_like(out_ts[1:-1]) - 0.5) * (0.5 / fps)
 
         # Augmentations (only on in_frames)
         if augmentations is not None:
@@ -357,9 +357,13 @@ def Heartcycle_collate(batch, max_frames, generator=None):
             k = max_frames - T
             in_idx = torch.cat([torch.arange(T), torch.randint(0, T, (k,), generator=generator)])
             out_idx = torch.cat([torch.arange(T), torch.randint(0, T, (k,), generator=generator)])
-        else:
+        elif T < max_frames*2:
             in_idx  = torch.randperm(T, generator=generator)[:max_frames]
             out_idx = torch.randperm(T, generator=generator)[:max_frames]
+        else:
+            perm = torch.randperm(T, generator=generator)
+            in_idx = perm[:max_frames]
+            out_idx = perm[max_frames:max_frames*2]
 
         in_idx, _ = torch.sort(in_idx)
         out_idx, _ = torch.sort(out_idx)

@@ -1,5 +1,5 @@
 # =========================
-# Topological loop analysis (cohomology-based circular coordinates) of the SAE latent space
+# Loop phase analysis
 # =========================
 import os, sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -9,6 +9,7 @@ from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
 import os
 import json
 from math import ceil
+import random
 import numpy as np
 from sklearn.decomposition import PCA
 from scipy.signal import savgol_filter
@@ -39,7 +40,7 @@ autocast = config["training"].get("autocast", False)
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
 
-idx = 1150 #random.randint(0, len(val_ds) - 1)
+idx = random.randint(0, len(val_ds) - 1)
 video = val_ds[idx]['video'].to(device).unsqueeze(0)
 video = video * 2 - 1  # [0,1] → [-1,1]
 timestamps = val_ds[idx]['timestamps'].unsqueeze(0).to(device)
@@ -57,6 +58,17 @@ z = (z - z.mean(dim=1, keepdim=True)).squeeze(0).cpu().numpy()  # [T, D]
 z_spline = (z_spline - z_spline.mean(dim=1, keepdim=True)).squeeze(0).cpu().numpy()  # [T, D]
 timestamps = timestamps.squeeze(0).cpu().numpy()  # [T]
 
+# Participation ratios
+def participation_ratio(z):
+    cov = np.cov(z, rowvar=False)
+    evals, _ = np.linalg.eigh(cov)
+    evals = np.sort(evals)[::-1]
+    pr = (evals.sum() ** 2) / (np.square(evals).sum() + 1e-8)
+    return pr, evals
+print("Participation Ratio (raw):", participation_ratio(z)[0])
+print("Participation Ratio (spline):", participation_ratio(z_spline)[0])
+
+# Detrend
 z = detrend(z, axis=0, type='linear')
 z_spline = detrend(z_spline, axis=0, type='linear')
 
