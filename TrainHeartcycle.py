@@ -1,0 +1,163 @@
+import os
+import json
+from datetime import datetime
+from math import ceil
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+import matplotlib.pyplot as plt
+
+from models.SplineAutoEncoder import SplineAutoEncoder
+from datahandling.HeartcycleDataset import HeartcycleDataset
+from datahandling.augmentations.get_augmentations import get_pretrain_augmentations
+from datahandling.collate import Heartcycle_collate
+
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+date = datetime.now().strftime("%Y_%m_%d")
+timestamp = datetime.now().strftime("%H_%M")
+output_dir = f"results/{date}/{timestamp}_Heartcycle"
+# os.makedirs(output_dir, exist_ok=True)
+
+config = json.load(open("config/SAE_1D.json", "r"))
+
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True
+torch.backends.cudnn.allow_tf32 = True
+torch.set_float32_matmul_precision(config["training"].get("matmul_precision", "high"))
+
+model = SplineAutoEncoder(
+    latent=config["model"]["latent"],
+    in_dim=config["model"].get("in_dim", 3),
+    out_dim=config["model"].get("out_dim", None),
+    n_ctrl=ceil(config["training"]["max_frames"]//config["model"]["frame_ctrl_ratio"])+config["model"]["degree"],
+    degree=config["model"]["degree"],
+    lam=config["model"]["lam"],
+).to(device)
+
+if config["training"].get("compile", False):
+    model = torch.compile(model)
+
+optimizer = torch.optim.AdamW(
+    model.parameters(),
+    lr=config["training"]["learning_rate"],
+    weight_decay=config["training"]["weight_decay"])
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    optimizer, T_max=config["training"]["epochs"])
+
+
+train_ds = HeartcycleDataset(
+    root='data/heartcycle',
+    inputs=("echo",),            # only load echo
+    include_time=True,
+    echo_transpose_to_image=True,
+    strict=False,                # skip files that don’t have echo
+)
+
+train_dl = DataLoader(
+    train_ds,
+    batch_size=config["training"]["batch_size"],
+    shuffle=True,
+    drop_last=True,
+    num_workers=30,
+    pin_memory=True,
+    persistent_workers=True,
+    prefetch_factor=2,
+    collate_fn=lambda x: Heartcycle_collate(
+        x,
+        max_frames=config["training"]["max_frames"],
+        augmentations=get_pretrain_augmentations() if config["training"]["augmentations"] else None,
+        time_jitter=config["training"]["time_jitter"],
+    ),
+)
+
+epochs = int(config["training"]["epochs"])
+autocast = bool(config["training"].get("autocast", True))
+grad_clip = float(config["training"].get("grad_clip_max_norm", 1.0))
+save_every = bool(config["training"].get("save_every_epoch", True))
+use_aug = bool(config["training"].get("use_augmented_input", True))
+
+criterion = nn.MSELoss()
+train_losses: list[float] = []
+z_regs: list[float] = []
+
+trainable_m = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
+print(f"SplineAutoEncoder: {trainable_m:.2f}M trainable parameters")
+
+
+def save_checkpoint(model: nn.Module, path: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if config["training"].get("compile", False):
+        torch.save(model._orig_mod.state_dict(), path)
+    else:
+        torch.save(model.state_dict(), path)
+
+def save_loss_plot(losses: list[float], z_regs: list[float], path: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    x = range(1, len(losses) + 1)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.plot(x, losses, label="Train Loss")
+    ax2 = ax.twinx()
+    ax2.plot(x, z_regs, label="Z Reg", color="orange")
+    ax2.set_ylabel("Z Regularization")
+    ax.legend(loc="upper left")
+    ax2.legend(loc="upper right")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.set_yscale("log")
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+
+
+for epoch in range(epochs):
+    model.train()
+    running = 0.0
+    z_reg_running = 0.0
+    seen = 0
+
+    pbar = tqdm(train_dl, desc=f"Epoch {epoch+1}/{epochs}")
+    for batch in pbar:
+        in_frames = batch["in_frames"].to(device)  # [B, T, C, H, W]
+        in_timestamps = batch["in_timestamps"].to(device)  # [B, T]
+        out_frames = batch["out_frames"].to(device)  # [B, T, C, H, W]
+        out_timestamps = batch["out_timestamps"].to(device)  # [B, T]
+
+        optimizer.zero_grad(set_to_none=True)
+        with torch.autocast('cuda', dtype=torch.bfloat16, enabled=autocast):
+            recon, z_reg = model(in_frames, in_timestamps, out_timestamps)
+            recon_loss = criterion(recon, out_frames)
+            loss = recon_loss + config["training"]["reg"] * z_reg
+
+        loss.backward()
+        gnorm = nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        optimizer.step()
+
+        running += loss.item() * config["training"]["batch_size"]
+        z_reg_running += z_reg.item() * config["training"]["batch_size"]
+        seen += config["training"]["batch_size"]
+        pbar.set_postfix({"Recon": float(recon_loss.item()), "z_reg": float(z_reg.item()), "gnorm": float(gnorm)})
+
+    epoch_loss = running / max(1, seen)
+    epoch_z_reg = z_reg_running / max(1, seen)
+    train_losses.append(epoch_loss)
+    z_regs.append(epoch_z_reg)
+    scheduler.step()
+
+    print(f"Epoch {epoch+1}/{epochs} - loss: {epoch_loss:.6f} - z_reg: {epoch_z_reg:.6f}")
+
+    if save_every:
+        save_loss_plot(train_losses, z_regs, os.path.join(output_dir, "losses.png"))
+        save_checkpoint(model, os.path.join(output_dir, "SAE.pth"))
+
+history = {"train_total": train_losses, "z_reg": z_regs}
+
+# Save config & history json
+with open(os.path.join(output_dir, "config.json"), "w") as f:
+    json.dump(config, f, indent=2)
+with open(os.path.join(output_dir, "history.json"), "w") as f:
+    json.dump(history, f, indent=2)
+
+print(f"Training complete. Model and loss plot saved to {output_dir}")

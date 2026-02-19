@@ -11,16 +11,13 @@ import numpy as np
 from tqdm import tqdm
 import json
 from math import ceil
-from scipy.signal import find_peaks
+from scipy.signal import find_peaks, detrend, savgol_filter
 from utils.find_extrema import compute_main_orientation_and_extrema
-from utils.topology import cohomology_circular_coords, find_phase_major_axis, project_to_principal_plane
-
-# NEW
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import multiprocessing as mp
+from utils.topology import cohomology_circular_coords, laplacian_phase, find_phase_major_axis, project_to_principal_plane
 
 
 def EDES_via_LMP(z, z_spline, timestamps, fps, gt_ed, gt_es):
+    z_spline = detrend(z_spline, axis=0, type='linear')
     group_ed, group_es, _, _, _, _ = compute_main_orientation_and_extrema(z_spline, fps)
     group = np.concatenate([group_ed, group_es])
     ed_err = np.min(np.abs(group - gt_ed))
@@ -29,23 +26,18 @@ def EDES_via_LMP(z, z_spline, timestamps, fps, gt_ed, gt_es):
 
 
 def EDES_via_Norm(z, z_spline, timestamps, fps, gt_ed, gt_es):
+    # z = detrend(z, axis=0, type='linear')
     z = np.linalg.norm(z, axis=-1)
-    group = find_peaks(z, prominence=0.5*np.std(z))[0]
+    group = find_peaks(z, distance=20, prominence=0.1*(np.max(z)-np.min(z)))[0]
     ed_err = np.min(np.abs(group - gt_ed))
     es_err = np.min(np.abs(group - gt_es))
     return ed_err, es_err
 
 
 def EDES_via_Phase(z, z_spline, timestamps, fps, gt_ed, gt_es):
-    phase, dgms = cohomology_circular_coords(
-        z_spline, fps=fps,
-        print_dgms_summary=False)
-    # Plane only likely to work if loop is prominent
-    # z_spline = project_to_principal_plane(z_spline, phase)
-    # radii = np.linalg.norm(z_spline - np.mean(z_spline, axis=0), axis=-1)
-    # group = find_peaks(radii, prominence=0.3*(np.max(radii)-np.min(radii)))[0]
-    major_axis = find_phase_major_axis(z_spline, phase)
-    z_proj = z_spline @ major_axis
+    z_spline = detrend(z_spline, axis=0, type='linear')
+    phase, evals, evecs, info = laplacian_phase(z_spline)
+    z_proj = z_spline @ find_phase_major_axis(z_spline, phase)
     group1 = find_peaks(z_proj, prominence=0.2*(np.max(z_proj)-np.min(z_proj)))[0]
     group2 = find_peaks(-z_proj, prominence=0.2*(np.max(z_proj)-np.min(z_proj)))[0]
     group = np.concatenate([group1, group2])
@@ -54,67 +46,39 @@ def EDES_via_Phase(z, z_spline, timestamps, fps, gt_ed, gt_es):
     return ed_err, es_err
 
 
-# ---- Worker wrapper (needed for executor.submit) ----
-def _detector_job(detector_fn, z_np, z_spline_np, timestamps_np, fps, gt_ed, gt_es):
-    return detector_fn(z_np, z_spline_np, timestamps_np, fps, gt_ed, gt_es), fps
-
-
 def eval_split(dl, split_name: str, autocast: bool, detector_fn, max_workers=None):
     """
-    Threaded version of eval_split.
-    GPU inference runs in main thread.
-    Detector runs in parallel threads.
+    Non-threaded version of eval_split.
+    GPU inference + detector run sequentially in main process.
     """
 
     ed_mae_list, es_mae_list, fps_all = [], [], []
 
-    # Sensible default: leave some cores free
-    if max_workers is None:
-        max_workers = max(1, (os.cpu_count() or 4) - 2)
+    with torch.inference_mode():
+        for videos, timestamps, frames_idx, fps in tqdm(dl, desc=split_name):
 
-    futures = []
+            gt_es, gt_ed = frames_idx[0]
+            fps = float(fps[0])
+            gt_es = int(gt_es.item())
+            gt_ed = int(gt_ed.item())
 
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        with torch.inference_mode():
-            for videos, timestamps, frames_idx, fps in tqdm(dl, desc=split_name):
+            videos = videos.to(device, non_blocking=True)
+            timestamps_cuda = timestamps.to(device, non_blocking=True)
 
-                gt_es, gt_ed = frames_idx[0]
-                fps = float(fps[0])
-                gt_es = int(gt_es.item())
-                gt_ed = int(gt_ed.item())
+            with torch.autocast('cuda', torch.bfloat16, enabled=autocast):
+                z = model.encode(videos)
+                z_spline = model.spline_fit_and_eval(z, timestamps_cuda, timestamps_cuda)
 
-                videos = videos.to(device, non_blocking=True)
-                timestamps_cuda = timestamps.to(device, non_blocking=True)
+            # Move to CPU numpy
+            z_np = (z - z.mean(dim=1, keepdim=True)).squeeze(0).cpu().numpy()
+            z_spline_np = (z_spline - z_spline.mean(dim=1, keepdim=True)).squeeze(0).cpu().numpy()
+            timestamps_np = timestamps.squeeze(0).cpu().numpy()
 
-                with torch.autocast('cuda', torch.bfloat16, enabled=autocast):
-                    z = model.encode(videos)
-                    z_spline = model.spline_fit_and_eval(z, timestamps_cuda, timestamps_cuda)
-
-                # Move to CPU numpy
-                z_np = (z - z.mean(dim=1, keepdim=True)).squeeze(0).cpu().numpy()
-                z_spline_np = (z_spline - z_spline.mean(dim=1, keepdim=True)).squeeze(0).cpu().numpy()
-                timestamps_np = timestamps.squeeze(0).cpu().numpy()
-
-                # Submit CPU detector job
-                futures.append(
-                    executor.submit(
-                        _detector_job,
-                        detector_fn,
-                        z_np,
-                        z_spline_np,
-                        timestamps_np,
-                        fps,
-                        gt_ed,
-                        gt_es
-                    )
-                )
-
-        # Collect results
-        for f in tqdm(as_completed(futures), total=len(futures), desc=f"{split_name} (detector)"):
-            (ed_err, es_err), fps_val = f.result()
+            # Run detector inline
+            ed_err, es_err = detector_fn(z_np, z_spline_np, timestamps_np, fps, gt_ed, gt_es)
             ed_mae_list.append(ed_err)
             es_mae_list.append(es_err)
-            fps_all.append(fps_val)
+            fps_all.append(fps)
 
     # ---- Aggregation (unchanged) ----
     mean_ed_mae = float(np.mean(ed_mae_list)) if len(ed_mae_list) else float("nan")
@@ -147,7 +111,7 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    load_dir = "results/2026_02_17/18_35_SAE"
+    load_dir = "results/2026_02_18/16_52_SAE"
 
     print("Starting ED/ES evaluation...")
 
@@ -186,7 +150,7 @@ if __name__ == "__main__":
     for detector in detectors:
         try:
             results.append({"lines": [f"\n--- {detector.__name__} ---", ""]})
-            results.append(eval_split(test_dl, "Test", autocast=autocast, detector_fn=detector, max_workers=8))
+            results.append(eval_split(test_dl, "Test", autocast=autocast, detector_fn=detector, max_workers=3))
         except Exception as e:
             print(f"Error evaluating {detector.__name__}: {e}")
             results.append({"lines": [f"\n--- {detector.__name__} ---", "Evaluation Failed"]})

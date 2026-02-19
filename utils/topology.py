@@ -2,10 +2,16 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.decomposition import PCA
-from scipy.signal import butter, filtfilt, savgol_filter
+from scipy.signal import butter, filtfilt, detrend, savgol_filter
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.neighbors import LocalOutlierFactor
 from dreimac import CircularCoords
+from sklearn.neighbors import NearestNeighbors
+from scipy.sparse.csgraph import shortest_path
+from scipy.sparse import csr_matrix, diags, csgraph, coo_matrix
+from scipy.sparse.linalg import eigsh
+from scipy.ndimage import gaussian_filter1d
+
 
 #####
 # Utility
@@ -20,12 +26,8 @@ def highpass_filter(signal, fs, cutoff=0.5, order=4, axis=0):
 
 def robust_z(z):
     # Dimensionality Reduction
-    pca = PCA(n_components=0.98)
+    pca = PCA(n_components=0.95)
     z_reduced = pca.fit_transform(z)
-
-    '''
-    Linearly Detrend each PCA independently...?
-    '''
 
     # LoF Robust Inliers
     lof = LocalOutlierFactor(n_neighbors=15)
@@ -37,10 +39,118 @@ def robust_z(z):
     # print(f"LOF: Keeping {len(fit_idx)} inliers, holding out {len(hold_idx)} points")
     return fit_idx, hold_idx
 
+def preprocess_to_tangent_space(z, pca=False):
+    z = detrend(z, axis=0, type='linear')
+    if pca:
+        pca_op = PCA(n_components=0.99)
+        z = pca_op.fit_transform(z)
+    z = np.gradient(z, axis=0, edge_order=2)
+    z = detrend(z, axis=0, type='linear')
+    return z
 
 #####
 # Topological
 #####
+
+def laplacian_phase(
+    X: np.ndarray,
+    k: int = 15,
+    sigma: float | None = None,
+    eps: float = 1e-12,
+    n_eigs: int = 6,
+    return_unwrapped: bool = False,
+):
+    """Graph-Laplacian (diffusion-map style) phase for a quasi-1D loop manifold."""
+    if X.ndim != 2:
+        raise ValueError("X must be [T, D]")
+    T = X.shape[0]
+    if k < 2:
+        raise ValueError("k must be >= 2")
+    if T < max(10, k + 2):
+        raise ValueError(f"Need more points than kNN. Got T={T}, k={k}.")
+    if n_eigs < 4:
+        raise ValueError("n_eigs should be >= 4 for reliable pair selection")
+
+    # ---- preprocessing ----
+    X = preprocess_to_tangent_space(X, pca=True)
+
+    # ---- kNN graph ----
+    dists, idx = NearestNeighbors(n_neighbors=k + 1).fit(X).kneighbors(X)
+    dists, idx = dists[:, 1:], idx[:, 1:]
+
+    # bandwidth via numpy nanmedian
+    if sigma is None:
+        sigma = float(np.nanmedian(dists) + eps)
+        if not np.isfinite(sigma) or sigma <= 0:
+            raise ValueError("Invalid sigma inferred from distances; check inputs or increase k.")
+    else:
+        sigma = float(sigma)
+
+    # weights
+    w = np.exp(-(dists**2) / (2.0 * sigma**2))
+    w = np.nan_to_num(w, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # build sparse adjacency (coo is the stock builder for this)
+    rows = np.repeat(np.arange(T), k)
+    cols = idx.reshape(-1)
+    W = coo_matrix((w.reshape(-1), (rows, cols)), shape=(T, T)).tocsr()
+
+    # symmetrize + clean using built-ins
+    W = (W + W.T) * 0.5
+    W.eliminate_zeros()
+
+    deg = np.asarray(W.sum(axis=1)).ravel()
+    if np.any(deg <= eps):
+        raise ValueError("Graph has near-zero degree nodes; try increasing k or adjusting preprocessing.")
+
+    # ---- normalized Laplacian ----
+    L = csgraph.laplacian(W, normed=True)
+
+    # ---- eigensolve ----
+    m = min(int(n_eigs), T - 2)
+    try:
+        evals, evecs = eigsh(L, k=m, which="SA")
+    except Exception:
+        evals, evecs = eigsh(L, k=m, sigma=0.0, which="LM")
+
+    order = np.argsort(evals)
+    evals, evecs = evals[order], evecs[:, order]
+
+    # ---- choose eigenvector pair ----
+    upper = min(m, 8)
+    best_score, best_pair = -np.inf, None
+    for i in range(1, upper):
+        a = evecs[:, i]
+        for j in range(i + 1, upper):
+            b = evecs[:, j]
+            r = np.hypot(a, b) + eps  # stock numpy helper
+            r_cv = r.std() / (r.mean() + eps)
+            spread = a.std() + b.std()
+            lam_gap = abs(evals[j] - evals[i]) / (abs(evals[i]) + abs(evals[j]) + eps)
+            score = -r_cv + 0.05 * spread - 0.2 * lam_gap
+            if score > best_score:
+                best_score, best_pair = score, (i, j)
+
+    if best_pair is None:
+        raise RuntimeError("Could not find a suitable eigenvector pair for phase.")
+
+    i, j = best_pair
+    theta = np.arctan2(evecs[:, j], evecs[:, i])
+
+    info = {
+        "k": int(k),
+        "sigma": float(sigma),
+        "pair": best_pair,
+        "degrees": deg,
+        "eigenvalues": evals,
+        "score": float(best_score),
+    }
+
+    if return_unwrapped:
+        return theta, np.unwrap(theta), evals, evecs, info
+    return theta, evals, evecs, info
+
+
 
 def cohomology_circular_coords(
         z: np.ndarray, fps: int,
@@ -53,12 +163,18 @@ def cohomology_circular_coords(
     '''
     assert z.ndim == 2, "z should be a 2D array of shape [T, D]"
 
-    # Center z
-    z = z - z.mean(axis=0, keepdims=True)
-
     # Filters
-    # z = savgol_filter(z, window_length=11, polyorder=3, axis=0)
-    z = highpass_filter(z, fs=fps, cutoff=0.5, order=4, axis=0)
+    # z = highpass_filter(z, fs=fps, cutoff=0.5, order=4, axis=0)
+    z = detrend(z, axis=0, type='linear')
+    # z = np.gradient(z, axis=0)
+
+    pca = PCA(n_components=0.99)
+    z = pca.fit_transform(z)
+
+    # Derivative...?
+    # z = savgol_filter(z, window_length=11, polyorder=3, deriv=1, axis=0)
+    z = np.gradient(z, axis=0)
+    z = detrend(z, axis=0, type='linear')
 
     # Robustly identify inlier points for circular coordinate fitting
     fit_idx, hold_idx = robust_z(z)
@@ -66,7 +182,7 @@ def cohomology_circular_coords(
     z_hold = z[hold_idx] if len(hold_idx) > 0 else None
 
     # PCA according to z_fit
-    pca = PCA(n_components=0.99)
+    pca = PCA(n_components=0.95)
     z_fit = pca.fit_transform(z_fit)
     z_hold = pca.transform(z_hold) if len(hold_idx) > 0 else None
 
@@ -79,13 +195,15 @@ def cohomology_circular_coords(
         D_fit_hold = np.linalg.norm(z_fit[:, None, :] - z_hold[None, :, :], axis=-1)    # (N_fit, N_hold)
         D_rect = np.hstack([D_fit_fit, D_fit_hold])                                     # (N_fit, N_all)
 
+
     # Fit circular coords using only fit subset, but assign to all columns
     cc = CircularCoords(D_rect, n_landmarks=len(fit_idx), distance_matrix=True)
-    try:
-        phase = cc.get_coordinates(perc=0.9)
-    except Exception as e:
-        print(f"Error: {e}")
-        phase = cc.get_coordinates(standard_range=False)
+    # cc = CircularCoords(z, n_landmarks=len(z))
+    # try:
+    phase = cc.get_coordinates(perc=0.9)
+    # except Exception as e:
+    #     print(f"Error: {e}")
+    #     phase = cc.get_coordinates(standard_range=False)
     dgms = cc.dgms_
 
     if print_dgms_summary:
@@ -108,22 +226,15 @@ def project_to_principal_plane(z: np.ndarray, phase: np.ndarray):
     z: [T, D] numpy array
     phase: [T,] numpy array of circular coordinates (in radians)
     '''
-    fit_idx, _ = robust_z(z)
-    z_fit = z[fit_idx]
-    phase_fit = phase[fit_idx]
     pls = PLSRegression(n_components=2)
-    pls.fit(z_fit, np.column_stack((np.sin(phase_fit), np.cos(phase_fit))))
+    pls.fit(z, np.column_stack((np.sin(phase), np.cos(phase))))
     z_2d = pls.transform(z)
     return z_2d
 
 
 def find_phase_major_axis(z: np.ndarray, phase: np.ndarray):
-    fit_idx, _ = robust_z(z)
-    z_fit = z[fit_idx]
-    phase_fit = phase[fit_idx]
-    Y = np.column_stack([np.sin(phase_fit), np.cos(phase_fit)])  # (N,2)
     pls = PLSRegression(n_components=2)
-    pls.fit(Y, z_fit)
+    pls.fit(np.column_stack([np.sin(phase), np.cos(phase)]), z)
     C = pls.coef_
     if C.shape[0] == 2:
         C = C.T  # (D, 2)

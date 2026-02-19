@@ -1,0 +1,21 @@
+{
+    "training": {
+        "epochs": 200,
+        "batch_size": 8,
+        "learning_rate": 1e-4,
+        "weight_decay": 1e-2,
+        "max_frames": 64,
+        "reg": 0.0002,
+        "autocast": false,
+        "compile": true,
+        "matmul_precision": "high"
+    },
+    "model": {
+        "latent": 512,
+        "in_dim": 3,
+        "out_dim": 3,
+        "degree": 3,
+        "frame_ctrl_ratio": 4,
+        "lam": 2.0
+    }
+}

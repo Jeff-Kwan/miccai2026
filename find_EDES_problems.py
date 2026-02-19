@@ -13,7 +13,7 @@ from math import ceil
 from tasks.Compute_EDES import EDES_via_Phase
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_17/18_35_SAE"
+load_dir = "results/2026_02_18/16_52_SAE"
 
 # ---- Model ----
 config = json.load(open("config/SAE.json", "r"))

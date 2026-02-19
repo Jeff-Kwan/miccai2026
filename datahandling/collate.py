@@ -339,3 +339,58 @@ def AE_collate(batch, max_frames, augmentations=None, time_jitter=False, generat
         "in_timestamps": in_timestamps,
         "out_timestamps": out_timestamps,
     }
+
+
+
+def Heartcycle_collate(batch, max_frames, generator=None):
+    in_vids, out_vids = [], []
+    in_tss, out_tss = [], []
+
+    for s in batch:
+        v = s["x"]["echo"]        # [T, C, D] in [0, 255]
+        ts = s["t"]["echo"]  # [T] in seconds
+        T = v.shape[0]
+
+        # Sampling
+        if T < max_frames:
+            k = max_frames - T
+            in_idx = torch.cat([torch.arange(T), torch.randint(0, T, (k,), generator=generator)])
+            out_idx = torch.cat([torch.arange(T), torch.randint(0, T, (k,), generator=generator)])
+        else:
+            in_idx  = torch.randperm(T, generator=generator)[:max_frames]
+            out_idx = torch.randperm(T, generator=generator)[:max_frames]
+
+        in_idx, _ = torch.sort(in_idx)
+        out_idx, _ = torch.sort(out_idx)
+        in_idx[0]  = torch.minimum(in_idx[0],  out_idx[0])
+        in_idx[-1] = torch.maximum(in_idx[-1], out_idx[-1])
+
+        # Gather frames/timestamps
+        in_v = v.index_select(0, in_idx)
+        out_v = v.index_select(0, out_idx)
+        in_ts = ts.index_select(0, in_idx)
+        out_ts = ts.index_select(0, out_idx)
+
+        # Shift timestamps to start at 0
+        t_start = in_ts[0].clone()
+        in_ts = in_ts - t_start
+        out_ts = out_ts - t_start
+
+        in_vids.append(in_v)
+        out_vids.append(out_v)
+        in_tss.append(in_ts)
+        out_tss.append(out_ts)
+
+    # Stack
+    in_frames = torch.stack(in_vids, dim=0)        # [B, n, C, D]
+    out_frames = torch.stack(out_vids, dim=0)      # [B, n, C, D]
+    in_timestamps = torch.stack(in_tss, dim=0)     # [B, n]
+    out_timestamps = torch.stack(out_tss, dim=0)   # [B, n]
+
+    # Normalize to [-1, 1]
+    return {
+        "in_frames": in_frames.float().div_(127.5).sub_(1),
+        "out_frames": out_frames.float().div_(127.5).sub_(1),
+        "in_timestamps": in_timestamps,
+        "out_timestamps": out_timestamps,
+    }
