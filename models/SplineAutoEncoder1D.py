@@ -59,8 +59,8 @@ class SimpleConvEncoder1D(nn.Module):
 
     def __init__(self, latent: int, in_dim: int = 3):
         super().__init__()
-        base = latent // 2
-        assert base // 64 > 4, "Latent dimension too small for 1D architecture (try reducing number of downsample stages)"
+        base = latent
+        assert base // 64 > in_dim, "Latent dimension too small for 1D architecture (try reducing number of downsample stages)"
         # Channel schedule (mirrors the 2D version, just 1D ops)
         channels = [
             base // 64,
@@ -117,15 +117,16 @@ class SimpleConvDecoder1D(nn.Module):
 
     def __init__(self, latent: int, out_dim: int = 3):
         super().__init__()
-        base = latent // 2
+        base = latent
 
         self.decoder = nn.Sequential(
             nn.ConvTranspose1d(latent, base, kernel_size=2, stride=2, padding=0),  # 1 -> 2
-            Upsample1D(base,      max(1, base // 2)),   # 2 -> 4
-            Upsample1D(max(1, base // 2), max(1, base // 4)),  # 4 -> 8
-            Upsample1D(max(1, base // 4), max(1, base // 8)),  # 8 -> 16
-            Upsample1D(max(1, base // 8), max(1, base // 16)), # 16 -> 32
-            Upsample1D(max(1, base // 16), max(1, base // 32)),# 32 -> 64
+            Upsample1D(base, base),
+            Upsample1D(base,      max(1, base // 2)),
+            Upsample1D(max(1, base // 2), max(1, base // 4)),
+            Upsample1D(max(1, base // 4), max(1, base // 8)),
+            Upsample1D(max(1, base // 8), max(1, base // 16)),
+            Upsample1D(max(1, base // 16), max(1, base // 32)),
             Upsample1D(max(1, base // 32), max(1, base // 64)),
             nn.Conv1d(max(1, base // 64), out_dim, kernel_size=3, padding=1),
         )
@@ -155,14 +156,13 @@ class SplineAutoEncoder1D(nn.Module):
         self,
         latent: int,
         in_dim: int = 3,
-        out_dim: int | None = None,
         degree: int = 3,
         n_ctrl: int = 12,
         lam: float = 1e-4,
         eps: float = 1e-12,
     ):
         super().__init__()
-        out_dim = in_dim if out_dim is None else out_dim
+        out_dim = in_dim
 
         self.latent = latent
         self.encoder = SimpleConvEncoder1D(latent=latent, in_dim=in_dim)

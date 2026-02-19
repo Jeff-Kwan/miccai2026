@@ -8,9 +8,8 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
-from models.SplineAutoEncoder import SplineAutoEncoder
+from models.SplineAutoEncoder1D import SplineAutoEncoder1D
 from datahandling.HeartcycleDataset import HeartcycleDataset
-from datahandling.augmentations.get_augmentations import get_pretrain_augmentations
 from datahandling.collate import Heartcycle_collate
 
 
@@ -18,7 +17,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 date = datetime.now().strftime("%Y_%m_%d")
 timestamp = datetime.now().strftime("%H_%M")
 output_dir = f"results/{date}/{timestamp}_Heartcycle"
-# os.makedirs(output_dir, exist_ok=True)
+os.makedirs(output_dir, exist_ok=True)
 
 config = json.load(open("config/SAE_1D.json", "r"))
 
@@ -27,10 +26,9 @@ torch.backends.cudnn.benchmark = True
 torch.backends.cudnn.allow_tf32 = True
 torch.set_float32_matmul_precision(config["training"].get("matmul_precision", "high"))
 
-model = SplineAutoEncoder(
+model = SplineAutoEncoder1D(
     latent=config["model"]["latent"],
     in_dim=config["model"].get("in_dim", 3),
-    out_dim=config["model"].get("out_dim", None),
     n_ctrl=ceil(config["training"]["max_frames"]//config["model"]["frame_ctrl_ratio"])+config["model"]["degree"],
     degree=config["model"]["degree"],
     lam=config["model"]["lam"],
@@ -51,7 +49,7 @@ train_ds = HeartcycleDataset(
     root='data/heartcycle',
     inputs=("echo",),            # only load echo
     include_time=True,
-    echo_transpose_to_image=True,
+    echo_transpose_to_image=False,
     strict=False,                # skip files that don’t have echo
 )
 
@@ -64,12 +62,7 @@ train_dl = DataLoader(
     pin_memory=True,
     persistent_workers=True,
     prefetch_factor=2,
-    collate_fn=lambda x: Heartcycle_collate(
-        x,
-        max_frames=config["training"]["max_frames"],
-        augmentations=get_pretrain_augmentations() if config["training"]["augmentations"] else None,
-        time_jitter=config["training"]["time_jitter"],
-    ),
+    collate_fn=lambda x: Heartcycle_collate(x, max_frames=config["training"]["max_frames"]),
 )
 
 epochs = int(config["training"]["epochs"])

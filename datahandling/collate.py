@@ -347,8 +347,9 @@ def Heartcycle_collate(batch, max_frames, generator=None):
     in_tss, out_tss = [], []
 
     for s in batch:
-        v = s["x"]["echo"]        # [T, C, D] in [0, 255]
+        v = s["x"]["echo"]        # [C, T, D] in [0, 255]
         ts = s["t"]["echo"]  # [T] in seconds
+        v = v.permute(1, 0, 2).contiguous()  # [T, C, D]
         T = v.shape[0]
 
         # Sampling
