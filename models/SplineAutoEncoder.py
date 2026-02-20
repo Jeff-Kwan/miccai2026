@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from torch import autocast
+from math import ceil
 
 
 class ResBlock(nn.Module):
@@ -128,7 +129,7 @@ class SplineAutoEncoder(nn.Module):
         in_dim: int = 3,
         out_dim: int | None = None,
         degree: int = 3,
-        n_ctrl: int = 12,
+        n_ctrl_params: list = [0.1, 5],    # Time / frames
         lam: float = 1e-4,
         eps: float = 1e-12,
     ):
@@ -140,7 +141,7 @@ class SplineAutoEncoder(nn.Module):
         self.decoder = SimpleConvDecoder(latent=latent, out_dim=out_dim)
 
         self.degree = degree
-        self.n_ctrl = n_ctrl
+        self.n_ctrl_params = n_ctrl_params
         self.lam = lam
         self.eps = eps
 
@@ -263,6 +264,11 @@ class SplineAutoEncoder(nn.Module):
         t0,t1: (B, 1) fp32  (normalization stats)
         """
         device = z_in.device
+        # Dynamically determine n_ctrl based on input length and frame_ctrl_ratio
+        # Usually by frame when batch-training, by time when inference one-by-one
+        with torch.no_grad():
+            N = t_in.shape[1]; T = t_in.max() - t_in.min()
+            n_ctrl = min(ceil(T/self.n_ctrl_params[0]), ceil(N/self.n_ctrl_params[1])) + self.degree
         with autocast('cuda', enabled=False):
             z32 = z_in.float()
             t32 = t_in.float()
@@ -272,14 +278,14 @@ class SplineAutoEncoder(nn.Module):
             t1 = t32.max(dim=1, keepdim=True).values
             t_n = (t32 - t0) / (t1 - t0 + self.eps)
 
-            knots = self.make_clamped_uniform_knots(t_n, self.degree, self.n_ctrl)
+            knots = self.make_clamped_uniform_knots(t_n, self.degree, n_ctrl)
             A = self.bspline_basis(t_n, knots, self.degree, eps=self.eps)
 
             At = A.transpose(1, 2)
             AtA = At @ A
             AtZ = At @ z32
 
-            DtD = self.second_difference_gram(self.n_ctrl, device=device, dtype=torch.float32)
+            DtD = self.second_difference_gram(n_ctrl, device=device, dtype=torch.float32)
             lhs = AtA + self.lam * DtD[None, :, :]
 
             P32 = torch.linalg.solve(lhs, AtZ)
@@ -311,7 +317,6 @@ class SplineAutoEncoder(nn.Module):
         """
         P32, knots, t0, t1 = self.spline_fit(z_in, t_in)
         return self.spline_eval(P32, knots, t_out, t0, t1, out_dtype=z_in.dtype)
-
 
     def forward(
         self,

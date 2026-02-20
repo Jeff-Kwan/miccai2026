@@ -11,20 +11,21 @@ from tqdm import tqdm
 import json
 from math import ceil
 from tasks.Compute_EDES import EDES_via_Phase
+from scipy.signal import detrend
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_18/16_52_SAE"
+load_dir = "results/2026_02_19/16_20_SAE"
 
 # ---- Model ----
 config = json.load(open("config/SAE.json", "r"))
 mcfg = config["model"]
 model = SplineAutoEncoder(
-    latent=mcfg["latent"],
-    in_dim=mcfg.get("in_dim", 3),
-    out_dim=mcfg.get("out_dim", None),
-    n_ctrl=ceil(config["training"]["max_frames"]//3)+3,
-    degree=3,
-    lam=1e-3,
+    latent=config["model"]["latent"],
+    in_dim=config["model"].get("in_dim", 3),
+    out_dim=config["model"].get("out_dim", None),
+    n_ctrl_params=config["model"]["n_ctrl_params"],
+    degree=config["model"]["degree"],
+    lam=config["model"]["lam"],
 ).to(device)
 
 model.load_state_dict(torch.load(os.path.join(load_dir, "SAE.pth"), map_location=device))
@@ -44,9 +45,11 @@ dl = DataLoader(
 )
 
 ### Run
-problems = {}
+problems = {}; errors = []
 with torch.inference_mode():
     for i, batch in tqdm(enumerate(dl)):
+        # if i < 80:
+        #     continue
         videos, timestamps, frames_idx, fps = batch
         gt_es, gt_ed = frames_idx[0]
         fps = float(fps[0])
@@ -59,11 +62,16 @@ with torch.inference_mode():
         with torch.autocast('cuda', torch.bfloat16, enabled=autocast):
             z = model.encode(videos)
             z_spline = model.spline_fit_and_eval(z, timestamps, timestamps)
-        z_np = (z - z.mean(dim=1, keepdim=True)).squeeze(0).cpu().numpy()
-        z_spline_np = (z_spline - z_spline.mean(dim=1, keepdim=True)).squeeze(0).cpu().numpy()
-        timestamps_np = timestamps.squeeze(0).cpu().numpy()
+        z = z.squeeze(0).cpu().numpy()
+        z_spline = z_spline.squeeze(0).cpu().numpy()
+        timestamps = timestamps.squeeze(0).cpu().numpy()
+        z = detrend(z, axis=0, type='linear')
+        z_spline = detrend(z_spline, axis=0, type='linear')
         try:
-            EDES_via_Phase(z_np, z_spline_np, timestamps_np, fps, gt_ed, gt_es)
+            ed_err, es_err = EDES_via_Phase(z, z_spline, timestamps, fps, gt_ed, gt_es)
+            errors.append([i, ed_err, es_err])
+            # print(f"Sample index {i}: ED error = {ed_err:.2f} frames, ES error = {es_err:.2f} frames")
+            # exit()
         except Exception as e:
             print("!!!!!")
             print(f"Sample index {i}: Video Length {videos.size(1)} - Error in computing circular coordinates: {e}")
@@ -77,3 +85,16 @@ with torch.inference_mode():
 print("\nSummary of problems encountered:")
 for error, indices in problems.items():
     print(f"Error: {error} - Occurred in samples: {indices}")
+
+print(f"Mean ED error: {np.mean([e[1] for e in errors]):.2f} frames, Mean ES error: {np.mean([e[2] for e in errors]):.2f} frames")
+print(f"Std ED error: {np.std([e[1] for e in errors]):.2f} frames, Std ES error: {np.std([e[2] for e in errors]):.2f} frames")
+# print indices & errors of first 3 largest errors
+errors = np.array(errors)
+largest_errors = errors[np.argsort(errors[:, 1])[::-1][:3]]
+print("\nTop 3 largest ED errors:")
+for idx, ed_err, es_err in largest_errors:
+    print(f"Sample index {idx}: ED error = {ed_err:.2f} frames, ES error = {es_err:.2f} frames")
+largest_errors = errors[np.argsort(errors[:, 2])[::-1][:3]]
+print("\nTop 3 largest ES errors:")
+for idx, ed_err, es_err in largest_errors:
+    print(f"Sample index {idx}: ED error = {ed_err:.2f} frames, ES error = {es_err:.2f} frames")

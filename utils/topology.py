@@ -8,6 +8,7 @@ from sklearn.neighbors import LocalOutlierFactor
 from dreimac import CircularCoords
 from sklearn.neighbors import NearestNeighbors
 from scipy.sparse.csgraph import shortest_path
+from scipy.interpolate import interp1d
 from scipy.sparse import csr_matrix, diags, csgraph, coo_matrix
 from scipy.sparse.linalg import eigsh
 from scipy.ndimage import gaussian_filter1d
@@ -39,13 +40,16 @@ def robust_z(z):
     # print(f"LOF: Keeping {len(fit_idx)} inliers, holding out {len(hold_idx)} points")
     return fit_idx, hold_idx
 
+
 def preprocess_to_tangent_space(z, pca=False):
+    z = detrend(z, axis=0, type='linear')
+    z = np.gradient(z, axis=0, edge_order=2)
+    # z = gaussian_filter1d(z, order=1, sigma=1, axis=0)
     z = detrend(z, axis=0, type='linear')
     if pca:
         pca_op = PCA(n_components=0.99)
         z = pca_op.fit_transform(z)
-    z = np.gradient(z, axis=0, edge_order=2)
-    z = detrend(z, axis=0, type='linear')
+    # z = z / np.linalg.norm(z, axis=-1, keepdims=True).clip(min=1e-12)
     return z
 
 #####
@@ -55,10 +59,9 @@ def preprocess_to_tangent_space(z, pca=False):
 def laplacian_phase(
     X: np.ndarray,
     k: int = 15,
-    sigma: float | None = None,
     eps: float = 1e-12,
-    n_eigs: int = 6,
-    return_unwrapped: bool = False,
+    n_eigs: int = 8,
+    alpha: float = 0.5,
 ):
     """Graph-Laplacian (diffusion-map style) phase for a quasi-1D loop manifold."""
     if X.ndim != 2:
@@ -70,38 +73,66 @@ def laplacian_phase(
         raise ValueError(f"Need more points than kNN. Got T={T}, k={k}.")
     if n_eigs < 4:
         raise ValueError("n_eigs should be >= 4 for reliable pair selection")
+    if not (0.0 <= alpha <= 1.5):
+        # not a hard rule, just a sanity bound so accidents are caught early
+        raise ValueError("alpha should usually be in [0, 1] (sometimes slightly >1).")
 
     # ---- preprocessing ----
     X = preprocess_to_tangent_space(X, pca=True)
 
-    # ---- kNN graph ----
+    # ---- kNN graph (directed) ----
     dists, idx = NearestNeighbors(n_neighbors=k + 1).fit(X).kneighbors(X)
-    dists, idx = dists[:, 1:], idx[:, 1:]
+    dists, idx = dists[:, 1:], idx[:, 1:]  # drop self
 
-    # bandwidth via numpy nanmedian
-    if sigma is None:
-        sigma = float(np.nanmedian(dists) + eps)
-        if not np.isfinite(sigma) or sigma <= 0:
-            raise ValueError("Invalid sigma inferred from distances; check inputs or increase k.")
-    else:
-        sigma = float(sigma)
+    # local scale per point: distance to its k-th neighbor (last column)
+    sigma_i = dists[:, -1].astype(float)
+    sigma_i = np.nan_to_num(sigma_i, nan=0.0, posinf=0.0, neginf=0.0)
 
-    # weights
-    w = np.exp(-(dists**2) / (2.0 * sigma**2))
-    w = np.nan_to_num(w, nan=0.0, posinf=0.0, neginf=0.0)
+    fallback = float(np.nanmedian(dists) + eps)
+    sigma_i[sigma_i <= eps] = fallback
 
-    # build sparse adjacency (coo is the stock builder for this)
+    # edge-wise scale: sigma_i * sigma_j for each (i -> idx[i, t]) edge
+    sigma_j = sigma_i[idx]  # shape (T, k)
+    denom = (sigma_i[:, None] * sigma_j) + eps
+
+    # self-tuning kernel weights on directed kNN edges
+    w_knn = np.exp(-(dists**2) / denom)
+    w_knn = np.nan_to_num(w_knn, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # ---- NEW: mutual kNN filter ----
     rows = np.repeat(np.arange(T), k)
     cols = idx.reshape(-1)
-    W = coo_matrix((w.reshape(-1), (rows, cols)), shape=(T, T)).tocsr()
+    dat  = w_knn.reshape(-1)
 
-    # symmetrize + clean using built-ins
+    # Build directed adjacency of kNN (unweighted) to test reciprocity efficiently
+    A_dir = coo_matrix((np.ones_like(dat, dtype=np.uint8), (rows, cols)), shape=(T, T)).tocsr()
+    # keep (i -> j) only if (j -> i) exists
+    mutual_mask = (A_dir[cols, rows].A1 > 0)
+
+    rows = rows[mutual_mask]
+    cols = cols[mutual_mask]
+    dat  = dat[mutual_mask]
+
+    # build sparse adjacency
+    W = coo_matrix((dat, (rows, cols)), shape=(T, T)).tocsr()
+
+    # symmetrize + clean
     W = (W + W.T) * 0.5
     W.eliminate_zeros()
 
+    # ---- NEW: alpha-normalization (density correction) ----
+    # q_i = sum_j W_ij ;  W <- D_q^{-alpha} W D_q^{-alpha}
+    if alpha != 0.0:
+        q = np.asarray(W.sum(axis=1)).ravel()
+        q = np.maximum(q, eps)
+        s = q ** (-alpha)
+        # sparse left/right scaling without forming dense diagonals
+        W = W.multiply(s[:, None]).multiply(s[None, :])
+        W.eliminate_zeros()
+
     deg = np.asarray(W.sum(axis=1)).ravel()
     if np.any(deg <= eps):
-        raise ValueError("Graph has near-zero degree nodes; try increasing k or adjusting preprocessing.")
+        raise ValueError("Graph has near-zero degree nodes; try increasing k, temporal_w, or preprocessing.")
 
     # ---- normalized Laplacian ----
     L = csgraph.laplacian(W, normed=True)
@@ -123,7 +154,7 @@ def laplacian_phase(
         a = evecs[:, i]
         for j in range(i + 1, upper):
             b = evecs[:, j]
-            r = np.hypot(a, b) + eps  # stock numpy helper
+            r = np.hypot(a, b) + eps
             r_cv = r.std() / (r.mean() + eps)
             spread = a.std() + b.std()
             lam_gap = abs(evals[j] - evals[i]) / (abs(evals[i]) + abs(evals[j]) + eps)
@@ -136,24 +167,12 @@ def laplacian_phase(
 
     i, j = best_pair
     theta = np.arctan2(evecs[:, j], evecs[:, i])
-
-    info = {
-        "k": int(k),
-        "sigma": float(sigma),
-        "pair": best_pair,
-        "degrees": deg,
-        "eigenvalues": evals,
-        "score": float(best_score),
-    }
-
-    if return_unwrapped:
-        return theta, np.unwrap(theta), evals, evecs, info
-    return theta, evals, evecs, info
+    return theta, evals, evecs
 
 
 
 def cohomology_circular_coords(
-        z: np.ndarray, fps: int,
+        z: np.ndarray,
         print_dgms_summary: bool = False):
     '''
     Extracts circular coordinates from the latent trajectory z using persistent cohomology.
@@ -164,17 +183,7 @@ def cohomology_circular_coords(
     assert z.ndim == 2, "z should be a 2D array of shape [T, D]"
 
     # Filters
-    # z = highpass_filter(z, fs=fps, cutoff=0.5, order=4, axis=0)
-    z = detrend(z, axis=0, type='linear')
-    # z = np.gradient(z, axis=0)
-
-    pca = PCA(n_components=0.99)
-    z = pca.fit_transform(z)
-
-    # Derivative...?
-    # z = savgol_filter(z, window_length=11, polyorder=3, deriv=1, axis=0)
-    z = np.gradient(z, axis=0)
-    z = detrend(z, axis=0, type='linear')
+    z = preprocess_to_tangent_space(z, pca=True)
 
     # Robustly identify inlier points for circular coordinate fitting
     fit_idx, hold_idx = robust_z(z)
@@ -233,6 +242,7 @@ def project_to_principal_plane(z: np.ndarray, phase: np.ndarray):
 
 
 def find_phase_major_axis(z: np.ndarray, phase: np.ndarray):
+    z = preprocess_to_tangent_space(z, pca=False)
     pls = PLSRegression(n_components=2)
     pls.fit(np.column_stack([np.sin(phase), np.cos(phase)]), z)
     C = pls.coef_
@@ -338,7 +348,8 @@ def plot_znorm_and_time(z: np.ndarray, timestamps: np.ndarray, out_dir: str, ind
     plt.close()
 
 
-def plot_phase_major_axis(z: np.ndarray, timestamps: np.ndarray, phase: np.ndarray, out_dir: str, index: int, frames_idx: list = None):
+def plot_phase_major_axis(z: np.ndarray, timestamps: np.ndarray, phase: np.ndarray, out_dir: str, index: int, 
+                          frames_idx: list = None, peaks: list = None):
     major_axis = find_phase_major_axis(z, phase)
     z_proj = z @ major_axis
     plt.scatter(timestamps, z_proj, c=phase, cmap='hsv', s=5)
@@ -350,6 +361,9 @@ def plot_phase_major_axis(z: np.ndarray, timestamps: np.ndarray, phase: np.ndarr
     if frames_idx is not None:
         for f in frames_idx:
             plt.scatter(timestamps[f], z_proj[f], color='red', marker="x", s=100, label="ES/ED", zorder=3)
+    if peaks is not None:
+        for p in peaks:
+            plt.scatter(timestamps[p], z_proj[p], color='black', marker="x", s=50, label="Peaks", zorder=3)
     plt.title('1D Projection of Latent Trajectory Colored by Phase')
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, f"{index}-phase_color_1d.png"), dpi=200)

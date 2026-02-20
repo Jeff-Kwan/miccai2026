@@ -1,8 +1,8 @@
 {
     "training": {
         "epochs": 500,
-        "batch_size": 64,
-        "learning_rate": 2e-4,
+        "batch_size": 32,
+        "learning_rate": 1e-4,
         "weight_decay": 1e-2,
         "max_frames": 64,
         "reg": 0.0002,
@@ -16,7 +16,7 @@
         "in_dim": 3,
         "out_dim": 3,
         "degree": 3,
-        "frame_ctrl_ratio": 4,
-        "lam": 1.0
+        "n_ctrl_params": [0.1, 5],
+        "lam": 0.001
     }
 }

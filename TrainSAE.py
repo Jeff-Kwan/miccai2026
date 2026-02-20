@@ -1,7 +1,6 @@
 import os
 import json
 from datetime import datetime
-from math import ceil
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -31,7 +30,7 @@ model = SplineAutoEncoder(
     latent=config["model"]["latent"],
     in_dim=config["model"].get("in_dim", 3),
     out_dim=config["model"].get("out_dim", None),
-    n_ctrl=ceil(config["training"]["max_frames"]//config["model"]["frame_ctrl_ratio"])+config["model"]["degree"],
+    n_ctrl_params=config["model"]["n_ctrl_params"],
     degree=config["model"]["degree"],
     lam=config["model"]["lam"],
 ).to(device)

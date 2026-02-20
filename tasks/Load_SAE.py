@@ -15,7 +15,7 @@ import json
 from math import ceil
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_17/18_35_SAE"
+load_dir = "results/2026_02_19/16_20_SAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -23,12 +23,12 @@ os.makedirs(output_dir, exist_ok=True)
 config = json.load(open("config/SAE.json", "r"))
 mcfg = config["model"]
 model = SplineAutoEncoder(
-    latent=mcfg["latent"],
-    in_dim=mcfg.get("in_dim", 3),
-    out_dim=mcfg.get("out_dim", None),
-    n_ctrl=ceil(config["training"]["max_frames"]//3)+3,
-    degree=3,
-    lam=1e-3,
+    latent=config["model"]["latent"],
+    in_dim=config["model"].get("in_dim", 3),
+    out_dim=config["model"].get("out_dim", None),
+    n_ctrl_params=config["model"]["n_ctrl_params"],
+    degree=config["model"]["degree"],
+    lam=config["model"]["lam"],
 ).to(device)
 model.load_state_dict(torch.load(os.path.join(load_dir, "SAE.pth"), map_location=device))
 autocast = config["training"].get("autocast", False)
@@ -36,7 +36,7 @@ autocast = config["training"].get("autocast", False)
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
 
-idx = 555#random.randint(0, len(val_ds) - 1)
+idx = 366#random.randint(0, len(val_ds) - 1)
 video = val_ds[idx]['video'].to(device).unsqueeze(0)
 video = video * 2 - 1  # [0,1] → [-1,1]
 timestamps = val_ds[idx]['timestamps'].unsqueeze(0).to(device)
