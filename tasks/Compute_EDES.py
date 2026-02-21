@@ -37,16 +37,16 @@ def EDES_via_Norm(z, z_spline, timestamps, fps, gt_ed, gt_es):
 
 
 def EDES_via_Phase(z, z_spline, timestamps, fps, gt_ed, gt_es):
-    # phase = laplacian_phase(z_spline)[0]
-    phase = cohomology_circular_coords(z_spline)[0]
+    phase = laplacian_phase(z_spline)[0]
+    # phase = cohomology_circular_coords(z_spline)[0]
     z_proj = z_spline @ find_phase_major_axis(z_spline, phase)
     z_proj = detrend(z_proj, type='linear')
     group1 = find_peaks(z_proj, prominence=0.2*(np.max(z_proj)-np.min(z_proj)), distance=5)[0]
     group2 = find_peaks(-z_proj, prominence=0.2*(np.max(z_proj)-np.min(z_proj)), distance=5)[0]
     group = np.concatenate([group1, group2])
-    print(f"Length of video: {len(z_proj)} frames")
-    print(f"Detected peaks at frames: {group}")
-    print(f"Ground truth ES at frame {gt_es}, ED at frame {gt_ed}")
+    # print(f"Length of video: {len(z_proj)} frames")
+    # print(f"Detected peaks at frames: {group}")
+    # print(f"Ground truth ES at frame {gt_es}, ED at frame {gt_ed}")
     ed_err = np.min(np.abs(group - gt_ed))
     es_err = np.min(np.abs(group - gt_es))
     return ed_err, es_err
@@ -120,7 +120,7 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    load_dir = "results/2026_02_19/16_20_SAE"
+    load_dir = "results/2026_02_20/16_42_SAE"
 
     print("Starting ED/ES evaluation...")
 

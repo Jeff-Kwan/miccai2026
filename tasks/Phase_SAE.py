@@ -15,11 +15,11 @@ from sklearn.decomposition import PCA
 from scipy.signal import savgol_filter, find_peaks
 from utils.topology import cohomology_circular_coords, plot_phase_and_z, plot_phase_and_time, \
         plot_znorm_and_time, plot_phase_major_axis, laplacian_phase, highpass_filter, detrend, \
-        preprocess_to_tangent_space, find_phase_major_axis
+        find_phase_major_axis, preprocess_z
 from tasks.Compute_EDES import EDES_via_Phase
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_19/16_20_SAE"
+load_dir = "results/2026_02_20/16_42_SAE"
 out_dir = os.path.join(load_dir, "topology")
 os.makedirs(out_dir, exist_ok=True)
 
@@ -40,7 +40,7 @@ autocast = config["training"].get("autocast", False)
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
 
-idx = 366#random.randint(0, len(test_ds) - 1)
+idx = 1128#random.randint(0, len(test_ds) - 1)
 video = test_ds[idx]['video'].to(device).unsqueeze(0)
 video = video * 2 - 1  # [0,1] → [-1,1]
 timestamps = test_ds[idx]['timestamps'].unsqueeze(0).to(device)
@@ -79,14 +79,11 @@ print("Participation Ratio (spline):", participation_ratio(z_spline)[0])
 z = detrend(z, axis=0, type='linear')
 z_spline = detrend(z_spline, axis=0, type='linear')
 
-# EDES_via_Phase(z, z_spline, timestamps, fps, gt_ed, gt_es)
-# exit()
-
-ed_err, es_err = EDES_via_Phase(z, z_spline, timestamps, fps, gt_ed, gt_es)
-print(f"ED error: {ed_err:.2f} frames, ES error: {es_err:.2f} frames")
+# ed_err, es_err = EDES_via_Phase(z, z_spline, timestamps, fps, gt_ed, gt_es)
+# print(f"ED error: {ed_err:.2f} frames, ES error: {es_err:.2f} frames")
 
 # phase, dgms = cohomology_circular_coords(
-#     z_spline, fps=fps,
+#     z_spline,
 #     print_dgms_summary=True) 
 phase, evals, evecs = laplacian_phase(z_spline)
 
@@ -106,11 +103,11 @@ plot_phase_major_axis(z_spline, t_dense, phase, out_dir, idx, frames_idx=frames_
 # PCA for plotting
 pca = PCA(n_components=3)
 # z_spline = highpass_filter(z_spline, fs=fps, cutoff=0.5, order=4, axis=0)
-# z_spline = preprocess_to_tangent_space(z_spline, pca=True)
+z_spline = preprocess_z(z_spline, pca=True)
 z_spline_3d = pca.fit_transform(z_spline)
 
 # plot_phase_and_z(z_spline_3d, phase, out_dir, idx, dim="2d", gt_ed=gt_ed, frames_idx=frames_idx)
 plot_phase_and_z(z_spline_3d, phase, out_dir, idx, dim="3d", gt_ed=gt_ed, frames_idx=frames_idx)
 plot_phase_and_time(phase, t_dense, out_dir, idx, gt_ed=gt_ed, frames_idx=frames_idx, differentiate=0)
 # plot_phase_and_time(phase, t_dense, out_dir, idx, gt_ed=gt_ed, frames_idx=frames_idx, differentiate=1)
-plot_znorm_and_time(z_spline_3d, t_dense, out_dir, idx, frames_idx=frames_idx)
+# plot_znorm_and_time(z_spline_3d, t_dense, out_dir, idx, frames_idx=frames_idx)

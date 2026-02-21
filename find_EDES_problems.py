@@ -14,7 +14,7 @@ from tasks.Compute_EDES import EDES_via_Phase
 from scipy.signal import detrend
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_19/16_20_SAE"
+load_dir = "results/2026_02_20/16_42_SAE"
 
 # ---- Model ----
 config = json.load(open("config/SAE.json", "r"))
@@ -86,8 +86,8 @@ print("\nSummary of problems encountered:")
 for error, indices in problems.items():
     print(f"Error: {error} - Occurred in samples: {indices}")
 
-print(f"Mean ED error: {np.mean([e[1] for e in errors]):.2f} frames, Mean ES error: {np.mean([e[2] for e in errors]):.2f} frames")
-print(f"Std ED error: {np.std([e[1] for e in errors]):.2f} frames, Std ES error: {np.std([e[2] for e in errors]):.2f} frames")
+print(f"ED Error MAE: {np.mean([e[1] for e in errors]):.2f} frames, STD: {np.std([e[1] for e in errors]):.2f} frames")
+print(f"ES Error MAE: {np.mean([e[2] for e in errors]):.2f} frames, STD: {np.std([e[2] for e in errors]):.2f} frames")
 # print indices & errors of first 3 largest errors
 errors = np.array(errors)
 largest_errors = errors[np.argsort(errors[:, 1])[::-1][:3]]

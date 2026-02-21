@@ -41,15 +41,20 @@ def robust_z(z):
     return fit_idx, hold_idx
 
 
-def preprocess_to_tangent_space(z, pca=False):
-    z = detrend(z, axis=0, type='linear')
+def preprocess_z(z, pca=False, alpha=0.9):
+    # z = detrend(z, axis=0, type='linear')
+    # z = z - z.mean(axis=0, keepdims=True)
+    # z = alpha*detrend(z, axis=0, type='linear') + (1-alpha)*z
     z = np.gradient(z, axis=0, edge_order=2)
-    # z = gaussian_filter1d(z, order=1, sigma=1, axis=0)
     z = detrend(z, axis=0, type='linear')
+    # z = z - z.mean(axis=0, keepdims=True)
+    # z = alpha*detrend(z, axis=0, type='linear') + (1-alpha)*z
     if pca:
         pca_op = PCA(n_components=0.99)
         z = pca_op.fit_transform(z)
-    # z = z / np.linalg.norm(z, axis=-1, keepdims=True).clip(min=1e-12)
+    norms = np.linalg.norm(z, axis=-1, keepdims=True)
+    norms = alpha*np.median(norms, axis=0, keepdims=True) + (1-alpha)*norms
+    z = z / norms
     return z
 
 #####
@@ -78,7 +83,7 @@ def laplacian_phase(
         raise ValueError("alpha should usually be in [0, 1] (sometimes slightly >1).")
 
     # ---- preprocessing ----
-    X = preprocess_to_tangent_space(X, pca=True)
+    X = preprocess_z(X, pca=False)
 
     # ---- kNN graph (directed) ----
     dists, idx = NearestNeighbors(n_neighbors=k + 1).fit(X).kneighbors(X)
@@ -116,8 +121,11 @@ def laplacian_phase(
     # build sparse adjacency
     W = coo_matrix((dat, (rows, cols)), shape=(T, T)).tocsr()
 
-    # symmetrize + clean
+    # symmetrize
     W = (W + W.T) * 0.5
+
+    # Lazy random walk
+    W.setdiag(W.diagonal() + 1e-4)
     W.eliminate_zeros()
 
     # ---- NEW: alpha-normalization (density correction) ----
@@ -158,7 +166,7 @@ def laplacian_phase(
             r_cv = r.std() / (r.mean() + eps)
             spread = a.std() + b.std()
             lam_gap = abs(evals[j] - evals[i]) / (abs(evals[i]) + abs(evals[j]) + eps)
-            score = -r_cv + 0.05 * spread - 0.2 * lam_gap
+            score = -r_cv + 0.1 * spread - 0.1 * lam_gap
             if score > best_score:
                 best_score, best_pair = score, (i, j)
 
@@ -183,7 +191,7 @@ def cohomology_circular_coords(
     assert z.ndim == 2, "z should be a 2D array of shape [T, D]"
 
     # Filters
-    z = preprocess_to_tangent_space(z, pca=True)
+    z = preprocess_z(z, pca=True)
 
     # Robustly identify inlier points for circular coordinate fitting
     fit_idx, hold_idx = robust_z(z)
@@ -242,7 +250,7 @@ def project_to_principal_plane(z: np.ndarray, phase: np.ndarray):
 
 
 def find_phase_major_axis(z: np.ndarray, phase: np.ndarray):
-    z = preprocess_to_tangent_space(z, pca=False)
+    z = preprocess_z(z, pca=False)
     pls = PLSRegression(n_components=2)
     pls.fit(np.column_stack([np.sin(phase), np.cos(phase)]), z)
     C = pls.coef_
