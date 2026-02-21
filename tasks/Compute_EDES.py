@@ -13,9 +13,28 @@ import json
 from math import ceil
 from scipy.signal import find_peaks, detrend, savgol_filter
 from sklearn.decomposition import PCA
+import umap
 from utils.find_extrema import compute_main_orientation_and_extrema
-from utils.topology import cohomology_circular_coords, laplacian_phase, find_phase_major_axis, project_to_principal_plane
+from utils.topology import cohomology_circular_coords, laplacian_phase, find_phase_major_axis,\
+project_to_phase_plane, von_mises_kernel_smoother
 
+def find_peaks_sentinel(input_array, p, d):
+    prominence = p * (np.max(input_array) - np.min(input_array))
+    # Sentinel padding to allow edge peaks/valleys to be detected
+    peak_input   = np.concatenate(([np.min(input_array)], input_array, [np.min(input_array)]))
+    valley_input = np.concatenate(([np.max(input_array)], input_array, [np.max(input_array)]))
+
+    peaks = find_peaks(peak_input, prominence=prominence, distance=d)[0]      # maxima
+    valleys = find_peaks(-valley_input, prominence=prominence, distance=d)[0]   # minima
+
+    # Remove sentinel offset and filter out invalid indices
+    peaks = peaks - 1
+    valleys = valleys - 1
+    N = len(input_array)
+    peaks = peaks[(peaks >= 0) & (peaks < N)]
+    valleys = valleys[(valleys >= 0) & (valleys < N)]
+
+    return peaks, valleys
 
 def EDES_via_LMP(z, z_spline, timestamps, fps, gt_ed, gt_es):
     group_ed, group_es, _, _, _, _ = compute_main_orientation_and_extrema(z_spline, fps)
@@ -26,30 +45,57 @@ def EDES_via_LMP(z, z_spline, timestamps, fps, gt_ed, gt_es):
 
 
 def EDES_via_Norm(z, z_spline, timestamps, fps, gt_ed, gt_es):
-    pca = PCA(n_components=0.99)
-    z = pca.fit_transform(z)
-    z = np.linalg.norm(z, axis=-1)
-    z = detrend(z, axis=0, type='linear')
-    group = find_peaks(z, distance=5, prominence=0.2*(np.max(z)-np.min(z)))[0]
-    ed_err = np.min(np.abs(group - gt_ed))
-    es_err = np.min(np.abs(group - gt_es))
-    return ed_err, es_err
-
-
-def EDES_via_Phase(z, z_spline, timestamps, fps, gt_ed, gt_es):
     phase = laplacian_phase(z_spline)[0]
-    # phase = cohomology_circular_coords(z_spline)[0]
-    z_proj = z_spline @ find_phase_major_axis(z_spline, phase)
-    z_proj = detrend(z_proj, type='linear')
-    group1 = find_peaks(z_proj, prominence=0.2*(np.max(z_proj)-np.min(z_proj)), distance=5)[0]
-    group2 = find_peaks(-z_proj, prominence=0.2*(np.max(z_proj)-np.min(z_proj)), distance=5)[0]
-    group = np.concatenate([group1, group2])
-    # print(f"Length of video: {len(z_proj)} frames")
-    # print(f"Detected peaks at frames: {group}")
-    # print(f"Ground truth ES at frame {gt_es}, ED at frame {gt_ed}")
+    grid, mu = von_mises_kernel_smoother(z_spline, phase, n_grid=512, kappa=1)
+    mu = np.linalg.norm(mu, axis=1)
+    peaks, _ = find_peaks_sentinel(mu, p=0.2, d=5)
+    pred_phases = grid[peaks]
+    delta1 = np.abs(phase - pred_phases[0])
+    delta2 = np.abs(phase - pred_phases[1])
+    _, valleys1 = find_peaks_sentinel(delta1, p=0.2, d=5)
+    _, valleys2 = find_peaks_sentinel(delta2, p=0.2, d=5)
+    group = np.concatenate([valleys1, valleys2])
     ed_err = np.min(np.abs(group - gt_ed))
     es_err = np.min(np.abs(group - gt_es))
     return ed_err, es_err
+
+
+def EDES_via_Phase(z, z_spline, timestamps, fps, gt_ed, gt_es, edge_events=True):
+    # phase = cohomology_circular_coords(z_spline, print_dgms_summary=False)[0]
+    phase = laplacian_phase(z_spline)[0]
+    z_proj = z @ find_phase_major_axis(z, phase)
+    z_proj = detrend(z_proj, type='linear')
+    peaks, valleys = find_peaks_sentinel(z_proj, p=0.2, d=5)
+    group = np.concatenate([peaks, valleys])
+    ed_err = np.min(np.abs(group - gt_ed))
+    es_err = np.min(np.abs(group - gt_es))
+    return ed_err, es_err
+
+
+def EDES_via_UMAP(z, z_spline, timestamps, fps, gt_ed, gt_es):
+    umap_model = umap.UMAP(
+    n_components=1,
+    n_neighbors=15,     # try 5–50 (local ↔ global)
+    min_dist=0.2,       # smaller = tighter clusters
+    metric="euclidean")
+    z_umap = umap_model.fit_transform(z_spline).squeeze()
+    z_umap = detrend(z_umap, axis=0, type='linear')
+    prom = 0.2 * (np.max(z_umap) - np.min(z_umap))
+    # Sentinel padding to allow edge peaks/valleys to be detected
+    peak_input   = np.concatenate(([np.min(z_umap)], z_umap, [np.min(z_umap)]))
+    valley_input = np.concatenate(([np.max(z_umap)], z_umap, [np.max(z_umap)]))
+    group1 = find_peaks(peak_input, prominence=prom, distance=5)[0]      # maxima
+    group2 = find_peaks(-valley_input, prominence=prom, distance=5)[0]   # minima
+    group1 = group1 - 1
+    group2 = group2 - 1
+    N = len(z_umap)
+    group1 = group1[(group1 >= 0) & (group1 < N)]
+    group2 = group2[(group2 >= 0) & (group2 < N)]
+    group = np.concatenate([group1, group2])
+    ed_err = np.min(np.abs(group - gt_ed))
+    es_err = np.min(np.abs(group - gt_es))
+    return ed_err, es_err
+
 
 def eval_split(dl, split_name: str, autocast: bool, detector_fn, max_workers=None):
     """
@@ -153,7 +199,7 @@ if __name__ == "__main__":
     )
 
     # ---- Evaluation ----
-    detectors = [EDES_via_LMP, EDES_via_Norm, EDES_via_Phase]
+    detectors = [EDES_via_Norm]
     results = []
 
     for detector in detectors:

@@ -10,7 +10,7 @@ import numpy as np
 from tqdm import tqdm
 import json
 from math import ceil
-from tasks.Compute_EDES import EDES_via_Phase
+from tasks.Compute_EDES import EDES_via_Phase, EDES_via_LMP, EDES_via_Norm
 from scipy.signal import detrend
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -74,7 +74,7 @@ with torch.inference_mode():
             # exit()
         except Exception as e:
             print("!!!!!")
-            print(f"Sample index {i}: Video Length {videos.size(1)} - Error in computing circular coordinates: {e}")
+            print(f"Sample index {i}: Video Length {videos.size(1)} : {e}")
             print("!!!!!")
             key = (type(e).__name__, str(e))
             if key not in problems:
@@ -91,10 +91,10 @@ print(f"ES Error MAE: {np.mean([e[2] for e in errors]):.2f} frames, STD: {np.std
 # print indices & errors of first 3 largest errors
 errors = np.array(errors)
 largest_errors = errors[np.argsort(errors[:, 1])[::-1][:3]]
-print("\nTop 3 largest ED errors:")
+print("\nLargest ED errors:")
 for idx, ed_err, es_err in largest_errors:
     print(f"Sample index {idx}: ED error = {ed_err:.2f} frames, ES error = {es_err:.2f} frames")
 largest_errors = errors[np.argsort(errors[:, 2])[::-1][:3]]
-print("\nTop 3 largest ES errors:")
+print("\nLargest ES errors:")
 for idx, ed_err, es_err in largest_errors:
     print(f"Sample index {idx}: ED error = {ed_err:.2f} frames, ES error = {es_err:.2f} frames")

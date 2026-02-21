@@ -11,11 +11,13 @@ import json
 from math import ceil
 import random
 import numpy as np
+import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
+import umap
 from scipy.signal import savgol_filter, find_peaks
 from utils.topology import cohomology_circular_coords, plot_phase_and_z, plot_phase_and_time, \
         plot_znorm_and_time, plot_phase_major_axis, laplacian_phase, highpass_filter, detrend, \
-        find_phase_major_axis, preprocess_z
+        find_phase_major_axis, preprocess_z, project_to_phase_plane, von_mises_kernel_smoother
 from tasks.Compute_EDES import EDES_via_Phase
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -40,7 +42,7 @@ autocast = config["training"].get("autocast", False)
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
 
-idx = 1128#random.randint(0, len(test_ds) - 1)
+idx = 161#random.randint(0, len(test_ds) - 1)
 video = test_ds[idx]['video'].to(device).unsqueeze(0)
 video = video * 2 - 1  # [0,1] → [-1,1]
 timestamps = test_ds[idx]['timestamps'].unsqueeze(0).to(device)
@@ -64,7 +66,6 @@ z_spline = (z_spline - z_spline.mean(dim=1, keepdim=True)).squeeze(0).cpu().nump
 timestamps = timestamps.squeeze(0).cpu().numpy()
 t_dense = t_dense.squeeze(0).cpu().numpy()  # [T_dense]
 
-
 # Participation ratios
 def participation_ratio(z):
     cov = np.cov(z, rowvar=False)
@@ -78,9 +79,6 @@ print("Participation Ratio (spline):", participation_ratio(z_spline)[0])
 # Detrend
 z = detrend(z, axis=0, type='linear')
 z_spline = detrend(z_spline, axis=0, type='linear')
-
-# ed_err, es_err = EDES_via_Phase(z, z_spline, timestamps, fps, gt_ed, gt_es)
-# print(f"ED error: {ed_err:.2f} frames, ES error: {es_err:.2f} frames")
 
 # phase, dgms = cohomology_circular_coords(
 #     z_spline,
@@ -100,14 +98,52 @@ print(peaks)
 
 plot_phase_major_axis(z_spline, t_dense, phase, out_dir, idx, frames_idx=frames_idx, peaks=peaks)
 
+
+grid, mu = von_mises_kernel_smoother(z_spline, phase, n_grid=512, kappa=1)
+z_phase_plane, pp_basis = project_to_phase_plane(z_spline, phase)
+plt.scatter(z_phase_plane[:, 0], z_phase_plane[:, 1], c=phase, cmap='hsv', s=5)
+plt.scatter(z_phase_plane[frames_idx, 0], z_phase_plane[frames_idx, 1], c='black', s=50, label='ES/ED frames')
+plt.colorbar(label='Phase')
+plt.title(f"Processed Z on Phase Plane")
+plt.xlabel("Phase Plane X")
+plt.ylabel("Phase Plane Y")
+plt.savefig(os.path.join(out_dir, f"{idx}-phase_plane-Processed.png"), dpi=200)
+plt.close()
+
+z_phase_plane = z_spline @ pp_basis
+mu_plane = mu @ pp_basis
+plt.scatter(z_phase_plane[:, 0], z_phase_plane[:, 1], c=phase, cmap='hsv', s=5)
+plt.plot(mu_plane[:, 0], mu_plane[:, 1], c='black', linewidth=2, label='Smoothed Trajectory')
+plt.scatter(z_phase_plane[frames_idx, 0], z_phase_plane[frames_idx, 1], c='red', marker='x', s=50, label='ES/ED frames')
+plt.colorbar(label='Phase')
+plt.title(f"Actual Z on Phase Plane")
+plt.xlabel("Phase Plane X")
+plt.ylabel("Phase Plane Y")
+plt.savefig(os.path.join(out_dir, f"{idx}-phase_plane-Actual.png"), dpi=200)
+plt.close()
+
 # PCA for plotting
 pca = PCA(n_components=3)
-# z_spline = highpass_filter(z_spline, fs=fps, cutoff=0.5, order=4, axis=0)
-z_spline = preprocess_z(z_spline, pca=True)
 z_spline_3d = pca.fit_transform(z_spline)
+mu_3d = pca.transform(mu)
 
-# plot_phase_and_z(z_spline_3d, phase, out_dir, idx, dim="2d", gt_ed=gt_ed, frames_idx=frames_idx)
-plot_phase_and_z(z_spline_3d, phase, out_dir, idx, dim="3d", gt_ed=gt_ed, frames_idx=frames_idx)
+# plot_phase_and_z(z_spline_3d, phase, out_dir, idx, dim="2d", gt_ed=gt_ed, frames_idx=frames_idx, mu=mu_3d)
+plot_phase_and_z(z_spline_3d, phase, out_dir, idx, dim="3d", gt_ed=gt_ed, frames_idx=frames_idx, mu=mu_3d)
 plot_phase_and_time(phase, t_dense, out_dir, idx, gt_ed=gt_ed, frames_idx=frames_idx, differentiate=0)
 # plot_phase_and_time(phase, t_dense, out_dir, idx, gt_ed=gt_ed, frames_idx=frames_idx, differentiate=1)
-# plot_znorm_and_time(z_spline_3d, t_dense, out_dir, idx, frames_idx=frames_idx)
+# plot_znorm_and_time(mu, t_dense, out_dir, idx, frames_idx=frames_idx)
+
+ed_phase = phase[gt_ed]; es_phase = phase[gt_es]
+# nearest neighbor grid idx for each event
+ed_grid_idx = np.argmin(np.abs(grid - ed_phase))
+es_grid_idx = np.argmin(np.abs(grid - es_phase))
+mu_norm = np.linalg.norm(mu, axis=-1)
+plt.scatter(grid, mu_norm, color='black', s=10)
+plt.scatter(grid[ed_grid_idx], mu_norm[ed_grid_idx], color='red', s=50, label='ED')
+plt.scatter(grid[es_grid_idx], mu_norm[es_grid_idx], color='blue', s=50, label='ES')
+plt.title("Smoothed Trajectory Norm vs Phase")
+plt.xlabel("Phase")
+plt.ylabel("Norm of Smoothed Trajectory")
+plt.legend()
+plt.savefig(os.path.join(out_dir, f"{idx}-mu_norm_vs_phase.png"), dpi=200)
+plt.close()

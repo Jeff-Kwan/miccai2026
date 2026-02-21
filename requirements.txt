@@ -12,3 +12,4 @@ scikit-image
 ripser
 dreimac
 h5py
+umap-learn
