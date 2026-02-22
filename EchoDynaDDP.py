@@ -233,10 +233,12 @@ for epoch in range(epochs):
 
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast):
+            # A-B parition cross-consistency
             recon, z_in, z_spline = model(all_frames_in, all_t_in, all_t_out)
-            recon_loss = criterion(recon, all_frames_out)
             z_inA, z_inB = z_in.chunk(2, dim=0)
             z_splineA, z_splineB = z_spline.chunk(2, dim=0)
+
+            recon_loss = criterion(recon, all_frames_out)
             z_reg = (z_inA - z_splineB).pow(2).sum(dim=-1).mean() + (z_inB - z_splineA).pow(2).sum(dim=-1).mean()
             loss = recon_loss + config["training"]["reg"] * z_reg
 
