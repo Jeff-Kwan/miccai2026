@@ -157,12 +157,6 @@ class SplineAutoEncoder(nn.Module):
         # (B, T, latent) -> (B, T, C, H, W)
         return self.decoder(z, H=H, W=W)
 
-    def forward(self, x: torch.Tensor):
-        B, T, C, H, W = x.shape
-        z = self.encode(x)
-        recon = self.decode(z, H=H, W=W)
-        return recon, z
-
     # -------------------------
     # B-spline utilities
     # -------------------------
@@ -250,6 +244,28 @@ class SplineAutoEncoder(nn.Module):
         D[i, i + 2] = 1
         return D.transpose(0, 1) @ D  # (n_ctrl, n_ctrl)
 
+    def time_weights(self, t_n: torch.Tensor):
+        """
+        t_n: (B, T) assumed sorted, normalized to [0,1] (or any monotonic scale)
+        returns w: (B, T) >= 0, roughly integrating dt.
+        """
+        B, T = t_n.shape
+        if T == 1:
+            return torch.ones_like(t_n)
+
+        dt = t_n[:, 1:] - t_n[:, :-1]                      # (B, T-1)
+        dt = dt.clamp_min(0.0)
+
+        w = torch.empty((B, T), device=t_n.device, dtype=t_n.dtype)
+        w[:, 0] = 0.5 * dt[:, 0]
+        w[:, -1] = 0.5 * dt[:, -1]
+        if T > 2:
+            w[:, 1:-1] = 0.5 * (dt[:, 1:] + dt[:, :-1])    # midpoint rule
+
+        # Normalization so mean weight is 1
+        w = w / w.mean(dim=1, keepdim=True)
+        return w
+
     # -------------------------
     # Spline fit + eval
     # -------------------------
@@ -281,9 +297,16 @@ class SplineAutoEncoder(nn.Module):
             knots = self.make_clamped_uniform_knots(t_n, self.degree, n_ctrl)
             A = self.bspline_basis(t_n, knots, self.degree, eps=self.eps)
 
-            At = A.transpose(1, 2)
-            AtA = At @ A
-            AtZ = At @ z32
+            # Handle non-uniform sampling density
+            w = self.time_weights(t_n)                       # (B, T)
+            sw = torch.sqrt(w).unsqueeze(-1)                 # (B, T, 1)
+
+            Aw = A * sw                                      # (B, T, n_ctrl)
+            Zw = z32 * sw                                    # (B, T, latent)
+
+            At = Aw.transpose(1, 2)                          # (B, n_ctrl, T)
+            AtA = At @ Aw                                    # (B, n_ctrl, n_ctrl)
+            AtZ = At @ Zw                                    # (B, n_ctrl, latent)
 
             DtD = self.second_difference_gram(n_ctrl, device=device, dtype=torch.float32)
             lhs = AtA + self.lam * DtD[None, :, :]
@@ -335,17 +358,11 @@ class SplineAutoEncoder(nn.Module):
         z_in = self.encode(in_frames)
 
         # Spline Fit
-        P32, knots, t0, t1 = self.spline_fit(z_in, in_timestamps)
+        z_spline = self.spline_fit_and_eval(z_in, in_timestamps, out_timestamps)
 
-        # Eval & Decode
-        z_out = self.spline_eval(P32, knots, out_timestamps, t0, t1, out_dtype=z_in.dtype)
-        recon_out = self.decode(z_out, H=H, W=W)
-
-        # Eval & L2 Regularize
-        z_in_spline = self.spline_eval(P32, knots, in_timestamps, t0, t1, out_dtype=z_in.dtype)
-        z_reg = (z_in - z_in_spline).pow(2).sum(dim=-1).mean()
-
-        return recon_out, z_reg
+        # Decode
+        recon_out = self.decode(z_spline, H=H, W=W)
+        return recon_out, z_in, z_spline
 
 
 
