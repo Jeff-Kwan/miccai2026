@@ -69,22 +69,28 @@ def laplacian_phase(
     if n_eigs < 4:
         raise ValueError("n_eigs should be >= 4 for reliable pair selection")
 
-    # ---- preprocessing ----
-    X = preprocess_z(X)
+    # # ---- preprocessing ----
+    # X = preprocess_z(X)
 
-    # ---- kNN graph (directed) ----
-    dists, idx = NearestNeighbors(n_neighbors=k+1, metric='cosine').fit(X).kneighbors(X)
-    dists, idx = dists[:, 1:], idx[:, 1:]  # drop self
-    cos_sim = 1.0 - dists   # [1.0, -1.0]
-    w_knn = cos_sim.clip(min=0.0) ** 2.0
+    # # ---- kNN graph (directed) ----
+    # dists, idx = NearestNeighbors(n_neighbors=k+1, metric='cosine').fit(X).kneighbors(X)
+    # dists, idx = dists[:, 1:], idx[:, 1:]  # drop self
+    # cos_sim = 1.0 - dists   # [1.0, -1.0]
+    # w_knn = cos_sim.clip(min=0.0) ** 2.0
 
-    # ---- Mutual & Symmetric ----
-    rows = np.repeat(np.arange(T), k)
-    cols = idx.reshape(-1)
-    dat  = w_knn.reshape(-1)
+    # # ---- Mutual & Symmetric ----
+    # rows = np.repeat(np.arange(T), k)
+    # cols = idx.reshape(-1)
+    # dat  = w_knn.reshape(-1)
 
-    # weighted directed adjacency
-    W = coo_matrix((dat, (rows, cols)), shape=(T, T)).tocsr()
+    # # weighted directed adjacency
+    # W = coo_matrix((dat, (rows, cols)), shape=(T, T)).tocsr()
+    X = detrend(X, axis=0, type='linear')
+    dX = savgol_filter(X, deriv=1, window_length=11, polyorder=3, axis=0)
+    dX = dX / np.linalg.norm(dX, axis=-1, keepdims=True)
+    X = X / np.linalg.norm(X, axis=-1, keepdims=True)
+    W = csr_matrix(((X @ X.T).clip(min=0.0) * (dX @ dX.T).clip(min=0.0)))
+    W = W - diags(W.diagonal())
 
     # keep only mutual edges: (i->j) AND (j->i)
     mutual = W.multiply(W.T) > 0        # nonzero only where both directions exist
@@ -115,26 +121,30 @@ def laplacian_phase(
     evals, evecs = evals[order], evecs[:, order]
 
     # ---- choose eigenvector pair ----
-    upper = min(m, 8)
-    best_score, best_pair = -np.inf, None
-    for i in range(1, upper):
-        a = evecs[:, i]
-        for j in range(i + 1, upper):
-            b = evecs[:, j]
-            r = np.hypot(a, b) + eps
-            r_cv = r.std() / (r.mean() + eps)
-            spread = a.std() + b.std()
-            lam_gap = abs(evals[j] - evals[i]) / (abs(evals[i]) + abs(evals[j]) + eps)
-            score = -r_cv + 0.1 * spread - 0.1 * lam_gap
-            if score > best_score:
-                best_score, best_pair = score, (i, j)
+    # upper = min(m, 8)
+    # best_score, best_pair = -np.inf, None
+    # for i in range(1, upper):
+    #     a = evecs[:, i]
+    #     for j in range(i + 1, upper):
+    #         b = evecs[:, j]
+    #         r = np.hypot(a, b) + eps
+    #         r_cv = r.std() / (r.mean() + eps)
+    #         spread = a.std() + b.std()
+    #         lam_gap = abs(evals[j] - evals[i]) / (abs(evals[i]) + abs(evals[j]) + eps)
+    #         score = -r_cv + 0.1 * spread - 0.1 * lam_gap
+    #         if score > best_score:
+    #             best_score, best_pair = score, (i, j)
 
-    if best_pair is None:
-        raise RuntimeError("Could not find a suitable eigenvector pair for phase.")
+    # if best_pair is None:
+    #     raise RuntimeError("Could not find a suitable eigenvector pair for phase.")
 
     # i, j = best_pair
     i, j = 1, 2
-    theta = np.arctan2(evecs[:, j], evecs[:, i])
+
+    # Smooth to encourage monotonicity & reduce noise sensitivity
+    a_s = gaussian_filter1d(evecs[:, i], sigma=1.0, axis=0)
+    b_s = gaussian_filter1d(evecs[:, j], sigma=1.0, axis=0)
+    theta = np.arctan2(b_s, a_s)
 
     # --- enforce increasing phase over time (sign convention) ---
     if np.nanmean(np.diff(np.unwrap(theta))) < 0:

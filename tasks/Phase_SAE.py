@@ -21,7 +21,7 @@ from utils.topology import cohomology_circular_coords, plot_phase_and_z, plot_ph
 from tasks.Compute_EDES import EDES_via_Phase
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_22/06_55_SAE"
+load_dir = "results/2026_02_22/10_48_SAE"
 out_dir = os.path.join(load_dir, "topology")
 os.makedirs(out_dir, exist_ok=True)
 
@@ -99,7 +99,7 @@ print(peaks)
 plot_phase_major_axis(z, t_dense, phase, out_dir, idx, frames_idx=frames_idx, peaks=peaks)
 
 
-grid, mu = von_mises_kernel_smoother(z, phase, n_grid=512, kappa=50)
+grid, mu = von_mises_kernel_smoother(z, phase, n_grid=512, kappa=30)
 z_phase_plane, pp_basis = project_to_phase_plane(z, phase)
 plt.scatter(z_phase_plane[:, 0], z_phase_plane[:, 1], c=phase, cmap='hsv', s=5)
 plt.scatter(z_phase_plane[frames_idx, 0], z_phase_plane[frames_idx, 1], c='black', s=50, label='ES/ED frames')
@@ -129,7 +129,7 @@ mu_3d = pca.transform(mu)
 
 # plot_phase_and_z(z_3d, phase, out_dir, idx, dim="2d", gt_ed=gt_ed, frames_idx=frames_idx, mu=mu_3d)
 plot_phase_and_z(z_3d, phase, out_dir, idx, dim="3d", gt_ed=gt_ed, frames_idx=frames_idx, mu=mu_3d)
-plot_phase_and_time(phase, t_dense, out_dir, idx, gt_ed=gt_ed, frames_idx=frames_idx, differentiate=0)
+plot_phase_and_time(phase, t_dense, out_dir, idx, sine=False, gt_ed=gt_ed, frames_idx=frames_idx, differentiate=0)
 # plot_phase_and_time(phase, t_dense, out_dir, idx, gt_ed=gt_ed, frames_idx=frames_idx, differentiate=1)
 # plot_znorm_and_time(mu, t_dense, out_dir, idx, frames_idx=frames_idx)
 

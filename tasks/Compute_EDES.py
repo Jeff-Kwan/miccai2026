@@ -61,11 +61,25 @@ def EDES_via_Norm(z, z_spline, timestamps, fps, gt_ed, gt_es):
 
 
 def EDES_via_Phase(z, z_spline, timestamps, fps, gt_ed, gt_es, edge_events=True):
+    z = detrend(z, axis=0, type='linear')
     # phase = cohomology_circular_coords(z_spline, print_dgms_summary=False)[0]
     phase = laplacian_phase(z)[0]
     z_proj = z @ find_phase_major_axis(z, phase)
     z_proj = detrend(z_proj, type='linear')
     peaks, valleys = find_peaks_sentinel(z_proj, p=0.2, d=5)
+    # g1 = peaks if peaks[0] < valleys[0] else valleys
+    # g2 = valleys if peaks[0] < valleys[0] else peaks
+    # if g2[0]-g1[0] > g1[1]-g2[0]:
+    #     es_pred = g2; ed_pred = g1
+    # else:
+    #     es_pred = g1; ed_pred = g2
+    # dphase = np.gradient(np.cos(phase), axis=0)
+    # peak_mu = np.mean(np.linalg.norm(dphase[peaks], axis=-1))
+    # valley_mu = np.mean(np.linalg.norm(dphase[valleys], axis=-1))
+    # if peak_mu > valley_mu:
+    #     ed_preds = peaks; es_preds = valleys
+    # else:
+    #     ed_preds = valleys; es_preds = peaks
     group = np.concatenate([peaks, valleys])
     ed_err = np.min(np.abs(group - gt_ed))
     es_err = np.min(np.abs(group - gt_es))
