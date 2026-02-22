@@ -21,7 +21,7 @@ from utils.topology import cohomology_circular_coords, plot_phase_and_z, plot_ph
 from tasks.Compute_EDES import EDES_via_Phase
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_22/04_16_SAE"
+load_dir = "results/2026_02_22/06_54_SAE"
 out_dir = os.path.join(load_dir, "topology")
 os.makedirs(out_dir, exist_ok=True)
 
@@ -42,7 +42,7 @@ autocast = config["training"].get("autocast", False)
 train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
 
-idx = 307#random.randint(0, len(test_ds) - 1)
+idx = 303#random.randint(0, len(test_ds) - 1)
 video = test_ds[idx]['video'].to(device).unsqueeze(0)
 video = video * 2 - 1  # [0,1] → [-1,1]
 timestamps = test_ds[idx]['timestamps'].unsqueeze(0).to(device)
@@ -89,18 +89,18 @@ z_spline = z_spline[::dense_factor]
 phase = phase[::dense_factor]
 t_dense = t_dense[::dense_factor]
 
-z_proj = z_spline @ find_phase_major_axis(z_spline, phase)
+z_proj = z @ find_phase_major_axis(z, phase)
 z_proj = detrend(z_proj, type='linear')
 group1 = find_peaks(z_proj, prominence=0.2*(np.max(z_proj)-np.min(z_proj)), distance=5)[0]
 group2 = find_peaks(-z_proj, prominence=0.2*(np.max(z_proj)-np.min(z_proj)), distance=5)[0]
 peaks = np.concatenate([group1, group2])
 print(peaks)
 
-plot_phase_major_axis(z_spline, t_dense, phase, out_dir, idx, frames_idx=frames_idx, peaks=peaks)
+plot_phase_major_axis(z, t_dense, phase, out_dir, idx, frames_idx=frames_idx, peaks=peaks)
 
 
-grid, mu = von_mises_kernel_smoother(z_spline, phase, n_grid=512, kappa=50)
-z_phase_plane, pp_basis = project_to_phase_plane(z_spline, phase)
+grid, mu = von_mises_kernel_smoother(z, phase, n_grid=512, kappa=50)
+z_phase_plane, pp_basis = project_to_phase_plane(z, phase)
 plt.scatter(z_phase_plane[:, 0], z_phase_plane[:, 1], c=phase, cmap='hsv', s=5)
 plt.scatter(z_phase_plane[frames_idx, 0], z_phase_plane[frames_idx, 1], c='black', s=50, label='ES/ED frames')
 plt.colorbar(label='Phase')
@@ -110,7 +110,7 @@ plt.ylabel("Phase Plane Y")
 plt.savefig(os.path.join(out_dir, f"{idx}-phase_plane-Processed.png"), dpi=200)
 plt.close()
 
-z_phase_plane = z_spline @ pp_basis
+z_phase_plane = z @ pp_basis
 mu_plane = mu @ pp_basis
 plt.scatter(z_phase_plane[:, 0], z_phase_plane[:, 1], c=phase, cmap='hsv', s=5)
 plt.plot(mu_plane[:, 0], mu_plane[:, 1], c='black', linewidth=2, label='Smoothed Trajectory')
@@ -124,11 +124,11 @@ plt.close()
 
 # PCA for plotting
 pca = PCA(n_components=3)
-z_spline_3d = pca.fit_transform(z_spline)
+z_3d = pca.fit_transform(z)
 mu_3d = pca.transform(mu)
 
-# plot_phase_and_z(z_spline_3d, phase, out_dir, idx, dim="2d", gt_ed=gt_ed, frames_idx=frames_idx, mu=mu_3d)
-plot_phase_and_z(z_spline_3d, phase, out_dir, idx, dim="3d", gt_ed=gt_ed, frames_idx=frames_idx, mu=mu_3d)
+# plot_phase_and_z(z_3d, phase, out_dir, idx, dim="2d", gt_ed=gt_ed, frames_idx=frames_idx, mu=mu_3d)
+plot_phase_and_z(z_3d, phase, out_dir, idx, dim="3d", gt_ed=gt_ed, frames_idx=frames_idx, mu=mu_3d)
 plot_phase_and_time(phase, t_dense, out_dir, idx, gt_ed=gt_ed, frames_idx=frames_idx, differentiate=0)
 # plot_phase_and_time(phase, t_dense, out_dir, idx, gt_ed=gt_ed, frames_idx=frames_idx, differentiate=1)
 # plot_znorm_and_time(mu, t_dense, out_dir, idx, frames_idx=frames_idx)

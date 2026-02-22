@@ -62,7 +62,7 @@ def EDES_via_Norm(z, z_spline, timestamps, fps, gt_ed, gt_es):
 
 def EDES_via_Phase(z, z_spline, timestamps, fps, gt_ed, gt_es, edge_events=True):
     # phase = cohomology_circular_coords(z_spline, print_dgms_summary=False)[0]
-    phase = laplacian_phase(z_spline)[0]
+    phase = laplacian_phase(z)[0]
     z_proj = z @ find_phase_major_axis(z, phase)
     z_proj = detrend(z_proj, type='linear')
     peaks, valleys = find_peaks_sentinel(z_proj, p=0.2, d=5)

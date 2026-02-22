@@ -42,9 +42,9 @@ def robust_z(z):
 
 
 def preprocess_z(z):
-    z = detrend(z, axis=0, type='linear')
+    z = detrend(z, axis=0, type='constant')
     z = savgol_filter(z, deriv=1, window_length=11, polyorder=3, axis=0)
-    z = detrend(z, axis=0, type='linear')
+    z = detrend(z, axis=0, type='constant')
     z = z / np.linalg.norm(z, axis=-1, keepdims=True)
     return z
 
@@ -115,22 +115,22 @@ def laplacian_phase(
     evals, evecs = evals[order], evecs[:, order]
 
     # ---- choose eigenvector pair ----
-    # upper = min(m, 8)
-    # best_score, best_pair = -np.inf, None
-    # for i in range(1, upper):
-    #     a = evecs[:, i]
-    #     for j in range(i + 1, upper):
-    #         b = evecs[:, j]
-    #         r = np.hypot(a, b) + eps
-    #         r_cv = r.std() / (r.mean() + eps)
-    #         spread = a.std() + b.std()
-    #         lam_gap = abs(evals[j] - evals[i]) / (abs(evals[i]) + abs(evals[j]) + eps)
-    #         score = -r_cv + 0.1 * spread - 0.1 * lam_gap
-    #         if score > best_score:
-    #             best_score, best_pair = score, (i, j)
+    upper = min(m, 8)
+    best_score, best_pair = -np.inf, None
+    for i in range(1, upper):
+        a = evecs[:, i]
+        for j in range(i + 1, upper):
+            b = evecs[:, j]
+            r = np.hypot(a, b) + eps
+            r_cv = r.std() / (r.mean() + eps)
+            spread = a.std() + b.std()
+            lam_gap = abs(evals[j] - evals[i]) / (abs(evals[i]) + abs(evals[j]) + eps)
+            score = -r_cv + 0.1 * spread - 0.1 * lam_gap
+            if score > best_score:
+                best_score, best_pair = score, (i, j)
 
-    # if best_pair is None:
-    #     raise RuntimeError("Could not find a suitable eigenvector pair for phase.")
+    if best_pair is None:
+        raise RuntimeError("Could not find a suitable eigenvector pair for phase.")
 
     # i, j = best_pair
     i, j = 1, 2
