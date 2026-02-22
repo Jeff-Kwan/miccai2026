@@ -278,7 +278,7 @@ for epoch in range(epochs):
             out_timestamps = batch["out_timestamps"].to(device)
 
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast):
-                recon, z_reg = model(in_frames, in_timestamps, out_timestamps)
+                recon, z_in, z_spline = model(in_frames, in_timestamps, out_timestamps)
                 recon_loss = criterion(recon, out_frames)
                 _ = recon_loss + config["training"]["reg"] * z_reg
 
