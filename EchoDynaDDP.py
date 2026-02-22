@@ -66,7 +66,7 @@ model = SplineAutoEncoder(
     n_ctrl_params=config["model"]["n_ctrl_params"],
     degree=config["model"]["degree"],
     lam=config["model"]["lam"],
-).to(device)
+).to(memory_format=torch.channels_last).to(device)
 
 if config["training"].get("compile", False):
     model = torch.compile(model)
