@@ -246,7 +246,7 @@ for epoch in range(epochs):
         gnorm = nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
 
-        bs = float(in_frames.size(0))
+        bs = float(A_frames.size(0))
         running += float(recon_loss.item()) * bs
         z_reg_running += float(z_reg.item()) * bs
         seen += bs
