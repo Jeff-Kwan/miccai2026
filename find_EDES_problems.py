@@ -14,7 +14,7 @@ from tasks.Compute_EDES import EDES_via_Phase, EDES_via_LMP, EDES_via_Norm
 from scipy.signal import detrend
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_22/06_54_SAE"
+load_dir = "results/2026_02_22/06_55_SAE"
 
 # ---- Model ----
 config = json.load(open("config/SAE.json", "r"))

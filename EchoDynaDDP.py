@@ -221,15 +221,26 @@ for epoch in range(epochs):
 
     iterable = tqdm(train_dl, desc=f"Epoch {epoch+1}/{epochs}") if is_main else train_dl
     for batch in iterable:
-        in_frames = batch["in_frames"].to(device)  # [B, T, C, H, W]
-        in_timestamps = batch["in_timestamps"].to(device)  # [B, T]
-        out_frames = batch["out_frames"].to(device)  # [B, T, C, H, W]
-        out_timestamps = batch["out_timestamps"].to(device)  # [B, T]
+        A_frames = batch["in_frames"].to(device)  # [B, T, C, H, W]
+        A_timestamps = batch["in_timestamps"].to(device)  # [B, T]
+        B_frames = batch["out_frames"].to(device)  # [B, T, C, H, W]
+        B_timestamps = batch["out_timestamps"].to(device)  # [B, T]
+        _, _, _, H, W = A_frames.shape
+        all_frames = torch.cat([A_frames, B_frames], dim=0)
 
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast):
-            recon, z_reg = model(in_frames, in_timestamps, out_timestamps)
-            recon_loss = criterion(recon, out_frames)
+            # Encode
+            z_inA, z_inB  = model.encode(all_frames).chunk(2, dim=0)
+
+            # Spline Fit
+            z_outA = model.spline_fit_and_eval(z_inA, A_timestamps, B_timestamps)
+            z_outB = model.spline_fit_and_eval(z_inB, B_timestamps, A_timestamps)
+
+            # Decode
+            all_out = model.decode(torch.cat([z_outA, z_outB], dim=0), H=H, W=W)
+            recon_loss = criterion(all_out, all_frames)
+            z_reg = (z_inA - z_outB).pow(2).sum(dim=-1).mean() + (z_inB - z_outA).pow(2).sum(dim=-1).mean()
             loss = recon_loss + config["training"]["reg"] * z_reg
 
         loss.backward()

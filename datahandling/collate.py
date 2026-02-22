@@ -323,6 +323,8 @@ def AE_collate(batch, max_frames, augmentations=None, generator=None):
         out_idx, _ = torch.sort(out_idx)
         in_idx[0]  = torch.minimum(in_idx[0],  out_idx[0])
         in_idx[-1] = torch.maximum(in_idx[-1], out_idx[-1])
+        out_idx[0] = in_idx[0]
+        out_idx[-1] = in_idx[-1]
 
         # Gather frames/timestamps
         in_v = v.index_select(0, in_idx)
