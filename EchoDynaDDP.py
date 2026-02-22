@@ -18,7 +18,7 @@ from datahandling.augmentations.get_augmentations import get_pretrain_augmentati
 from datahandling.collate import AE_collate
 
 
-# -------------------- DDP SETUP (NEW) --------------------
+# -------------------- DDP SETUP --------------------
 def ddp_setup():
     is_distributed = int(os.environ.get("WORLD_SIZE", "1")) > 1
     if not is_distributed:
@@ -37,7 +37,7 @@ def ddp_setup():
 is_distributed, rank, world_size, device = ddp_setup()
 is_main = (rank == 0)
 
-# Make output_dir identical across ranks (NEW)
+# Make output_dir identical across ranks
 date = None
 timestamp = None
 if is_main:
@@ -71,7 +71,7 @@ model = SplineAutoEncoder(
 if config["training"].get("compile", False):
     model = torch.compile(model)
 
-# Wrap in DDP (NEW)
+# Wrap in DDP
 if is_distributed:
     model = DDP(model, device_ids=[device.index], output_device=device.index)
 
@@ -84,20 +84,28 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
     optimizer, T_max=config["training"]["epochs"]
 )
 
-train_ds, val_ds, _ = load_echonet_dynamic_datasets(get_mask=False)
+# Load only train dataset (val removed)
+train_ds, _, _ = load_echonet_dynamic_datasets(get_mask=False)
 
-# Divide global batch size by number of GPUs (NEW)
+# Divide global batch size by number of GPUs
 global_bs = int(config["training"]["batch_size"])
 if is_distributed:
     if global_bs % world_size != 0:
-        raise ValueError(f'config["training"]["batch_size"]={global_bs} must be divisible by WORLD_SIZE={world_size}')
+        raise ValueError(
+            f'config["training"]["batch_size"]={global_bs} must be divisible by WORLD_SIZE={world_size}'
+        )
     per_gpu_bs = global_bs // world_size
 else:
     per_gpu_bs = global_bs
 
-# Distributed samplers (NEW)
-train_sampler = DistributedSampler(train_ds, num_replicas=world_size, rank=rank, shuffle=True, drop_last=True) if is_distributed else None
-val_sampler = DistributedSampler(val_ds, num_replicas=world_size, rank=rank, shuffle=False, drop_last=True) if is_distributed else None
+# Distributed sampler (train only)
+train_sampler = (
+    DistributedSampler(
+        train_ds, num_replicas=world_size, rank=rank, shuffle=True, drop_last=True
+    )
+    if is_distributed
+    else None
+)
 
 train_dl = DataLoader(
     train_ds,
@@ -112,24 +120,9 @@ train_dl = DataLoader(
     collate_fn=lambda x: AE_collate(
         x,
         max_frames=config["training"]["max_frames"],
-        augmentations=get_pretrain_augmentations() if config["training"]["augmentations"] else None,
-    ),
-)
-
-val_dl = DataLoader(
-    val_ds,
-    batch_size=per_gpu_bs,
-    shuffle=False,
-    sampler=val_sampler,
-    drop_last=True,
-    num_workers=8,
-    pin_memory=True,
-    persistent_workers=True,
-    prefetch_factor=2,
-    collate_fn=lambda x: AE_collate(
-        x,
-        max_frames=config["training"]["max_frames"],
-        augmentations=None,
+        augmentations=get_pretrain_augmentations()
+        if config["training"]["augmentations"]
+        else None,
     ),
 )
 
@@ -143,8 +136,6 @@ criterion = nn.MSELoss()
 
 train_losses: list[float] = []
 z_regs: list[float] = []
-val_losses: list[float] = []
-val_z_regs: list[float] = []
 
 if is_main:
     trainable_m = sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6
@@ -168,28 +159,20 @@ def save_checkpoint(model: nn.Module, path: str) -> None:
 def save_loss_plot(
     train_losses: list[float],
     train_z_regs: list[float],
-    val_losses: list[float],
-    val_z_regs: list[float],
     path: str,
 ) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     x_tr = range(1, len(train_losses) + 1)
-    x_va = range(1, len(val_losses) + 1)
 
     fig, ax = plt.subplots(figsize=(8, 6))
 
     ax.plot(x_tr, train_losses, label="Train Recon", color="blue", linestyle="-")
-    if len(val_losses) > 0:
-        ax.plot(x_va, val_losses, label="Val Recon", color="blue", linestyle=":")
-
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Reconstruction Loss")
     ax.set_yscale("log")
 
     ax2 = ax.twinx()
     ax2.plot(x_tr, train_z_regs, label="Train Z Reg", color="orange", linestyle="-")
-    if len(val_z_regs) > 0:
-        ax2.plot(x_va, val_z_regs, label="Val Z Reg", color="orange", linestyle=":")
     ax2.set_ylabel("Z Regularization")
 
     lines = ax.get_lines() + ax2.get_lines()
@@ -226,6 +209,7 @@ for epoch in range(epochs):
         B_frames = batch["out_frames"].to(device)  # [B, T, C, H, W]
         B_timestamps = batch["out_timestamps"].to(device)  # [B, T]
         _, _, _, H, W = A_frames.shape
+
         all_frames_in = torch.cat([A_frames, B_frames], dim=0)
         all_frames_out = torch.cat([B_frames, A_frames], dim=0)
         all_t_in = torch.cat([A_timestamps, B_timestamps], dim=0)
@@ -233,7 +217,7 @@ for epoch in range(epochs):
 
         optimizer.zero_grad(set_to_none=True)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast):
-            # A-B parition cross-consistency
+            # A-B partition cross-consistency
             recon, z_in, z_spline = model(all_frames_in, all_t_in, all_t_out)
             z_inA, z_inB = z_in.chunk(2, dim=0)
             z_splineA, z_splineB = z_spline.chunk(2, dim=0)
@@ -252,9 +236,11 @@ for epoch in range(epochs):
         seen += bs
 
         if is_main:
-            iterable.set_postfix({"Recon": float(recon_loss.item()), "z_reg": float(z_reg.item()), "gnorm": float(gnorm)})
+            iterable.set_postfix(
+                {"Recon": float(recon_loss.item()), "z_reg": float(z_reg.item()), "gnorm": float(gnorm)}
+            )
 
-    # Reduce epoch stats across GPUs (NEW)
+    # Reduce epoch stats across GPUs
     running, z_reg_running, seen = ddp_sum_([running, z_reg_running, seen])
 
     epoch_loss = running / max(1.0, seen)
@@ -263,62 +249,24 @@ for epoch in range(epochs):
     z_regs.append(epoch_z_reg)
     scheduler.step()
 
-    # -------------------- VAL --------------------
-    model.eval()
-    val_running = 0.0
-    val_z_reg_running = 0.0
-    val_seen = 0.0
-
-    with torch.no_grad():
-        viter = tqdm(val_dl, desc=f"Val {epoch+1}/{epochs}", leave=False) if is_main else val_dl
-        for batch in viter:
-            in_frames = batch["in_frames"].to(device)
-            in_timestamps = batch["in_timestamps"].to(device)
-            out_frames = batch["out_frames"].to(device)
-            out_timestamps = batch["out_timestamps"].to(device)
-
-            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast):
-                recon, z_in, z_spline = model(in_frames, in_timestamps, out_timestamps)
-                recon_loss = criterion(recon, out_frames)
-                _ = recon_loss + config["training"]["reg"] * z_reg
-
-            bs = float(in_frames.size(0))
-            val_running += float(recon_loss.item()) * bs
-            val_z_reg_running += float(z_reg.item()) * bs
-            val_seen += bs
-
-            if is_main:
-                viter.set_postfix({"Recon": float(recon_loss.item()), "z_reg": float(z_reg.item())})
-
-    val_running, val_z_reg_running, val_seen = ddp_sum_([val_running, val_z_reg_running, val_seen])
-
-    epoch_val_loss = val_running / max(1.0, val_seen)
-    epoch_val_z_reg = val_z_reg_running / max(1.0, val_seen)
-    val_losses.append(epoch_val_loss)
-    val_z_regs.append(epoch_val_z_reg)
-
     if is_main:
         print(
             f"Epoch {epoch+1}/{epochs} "
-            f"- train loss: {epoch_loss:.6f} - train z_reg: {epoch_z_reg:.6f} "
-            f"- val loss: {epoch_val_loss:.6f} - val z_reg: {epoch_val_z_reg:.6f}"
+            f"- train loss: {epoch_loss:.6f} - train z_reg: {epoch_z_reg:.6f}"
         )
 
         if save_every:
             save_loss_plot(
                 train_losses, z_regs,
-                val_losses, val_z_regs,
                 os.path.join(output_dir, "losses.png"),
             )
             save_checkpoint(model, os.path.join(output_dir, "SAE.pth"))
 
-# Save config & history json (rank 0 only) (NEW)
+# Save config & history json (rank 0 only)
 if is_main:
     history = {
         "train_total": train_losses,
         "z_reg": z_regs,
-        "val_total": val_losses,
-        "val_z_reg": val_z_regs,
     }
 
     with open(os.path.join(output_dir, "config.json"), "w") as f:
