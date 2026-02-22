@@ -166,7 +166,7 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    load_dir = "results/2026_02_20/16_42_SAE"
+    load_dir = "results/2026_02_21/17_26_SAE"
 
     print("Starting ED/ES evaluation...")
 

@@ -1,12 +1,12 @@
 {
     "training": {
-        "epochs": 500,
+        "epochs": 200,
         "batch_size": 32,
         "learning_rate": 1e-4,
         "weight_decay": 1e-2,
         "max_frames": 64,
         "reg": 0.001,
-        "augmentations": true,
+        "augmentations": false,
         "autocast": false,
         "compile": true,
         "matmul_precision": "high"
@@ -16,7 +16,7 @@
         "in_dim": 3,
         "out_dim": 3,
         "degree": 3,
-        "n_ctrl_params": [0.2, 10],
+        "n_ctrl_params": [0.2, 5],
         "lam": 0.001
     }
 }
