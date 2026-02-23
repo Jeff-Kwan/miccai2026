@@ -20,7 +20,7 @@ output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
 
-config = json.load(open("config/SAE.json", "r"))
+config = json.load(open(os.path.join(load_dir, "config.json"), "r"))
 mcfg = config["model"]
 model = SplineAutoEncoder(
     latent=config["model"]["latent"],

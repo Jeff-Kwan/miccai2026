@@ -185,7 +185,7 @@ if __name__ == "__main__":
     print("Starting ED/ES evaluation...")
 
     # ---- Model ----
-    config = json.load(open("config/SAE.json", "r"))
+    config = json.load(open(os.path.join(load_dir, "config.json"), "r"))
     mcfg = config["model"]
     model = SplineAutoEncoder(
     latent=config["model"]["latent"],

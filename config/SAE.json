@@ -17,6 +17,6 @@
         "out_dim": 3,
         "degree": 3,
         "n_ctrl_params": [0.1, 5],
-        "lam": 0.001
+        "lam": 1.0
     }
 }

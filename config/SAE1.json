@@ -5,7 +5,7 @@
         "learning_rate": 1e-4,
         "weight_decay": 1e-2,
         "max_frames": 64,
-        "reg": 0.001,
+        "reg": 0.002,
         "augmentations": false,
         "autocast": false,
         "compile": true,
@@ -16,7 +16,7 @@
         "in_dim": 3,
         "out_dim": 3,
         "degree": 3,
-        "n_ctrl_params": [0.1, 5],
-        "lam": 0.05
+        "n_ctrl_params": [0.2, 10],
+        "lam": 0.1
     }
 }

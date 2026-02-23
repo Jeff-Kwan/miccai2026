@@ -21,12 +21,12 @@ from utils.topology import cohomology_circular_coords, plot_phase_and_z, plot_ph
 from tasks.Compute_EDES import EDES_via_Phase
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_22/10_48_SAE"
+load_dir = "results/2026_02_22/18_28_SAE"
 out_dir = os.path.join(load_dir, "topology")
 os.makedirs(out_dir, exist_ok=True)
 
 
-config = json.load(open("config/SAE.json", "r"))
+config = json.load(open(os.path.join(load_dir, "config.json"), "r"))
 mcfg = config["model"]
 model = SplineAutoEncoder(
     latent=config["model"]["latent"],
