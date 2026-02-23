@@ -391,7 +391,7 @@ if __name__ == "__main__":
         record_shapes=True,
         with_flops=True,
     ) as prof:
-        recon, z = model(x, timestamps, timestamps)
+        recon, z_in, z_spline = model(x, timestamps, timestamps)
 
     print(prof.key_averages().table(sort_by=f"self_{device}_memory_usage", row_limit=8))
 
@@ -403,4 +403,4 @@ if __name__ == "__main__":
         round(sum(p.numel() for p in model.parameters() if p.requires_grad) / 1e6, 2),
         "M",
     )
-    print("recon:", tuple(recon.shape), "z:", tuple(z.shape))
+    print("recon:", tuple(recon.shape), "z_in:", tuple(z_in.shape), "z_spline:", tuple(z_spline.shape))
