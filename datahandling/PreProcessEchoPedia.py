@@ -18,24 +18,13 @@ META_CAST_PEDS = {
     "Age": float,
     "Weight": float,
     "Height": float,
-    "Split": str,
+    "Split": str,   # kept if present in CSV; we just don't use it for foldering
 }
-
-def _norm_split(s: str) -> str:
-    s = (s or "").strip().upper()
-    if s in {"TRAIN", "TR"}:
-        return "TRAIN"
-    if s in {"VAL", "VALID", "VALIDATION", "DEV"}:
-        return "VAL"
-    if s in {"TEST", "TE"}:
-        return "TEST"
-    return s if s in {"TRAIN", "VAL", "TEST"} else "TEST"
 
 @dataclass(frozen=True)
 class EchoPedsItem:
     video_path: str
     base: str            # without .avi
-    split: str           # TRAIN/VAL/TEST
     view: str            # A4C or PSAX
     metadata: Dict[str, Any]
 
@@ -60,32 +49,32 @@ def load_tracings_polygons_xy(tracings_csv_path: str) -> Dict[str, Dict[int, Lis
                 x = float(row["X"])
                 y = float(row["Y"])
                 tracings.setdefault(fn, {}).setdefault(frame, []).append((x, y))
-            except:
+            except Exception:
                 continue
     return tracings
 
 
-def load_split_items_peds(
+def load_items_peds_all(
     filelist_csv: str,
     videos_dir: str,
     view: str,
     tracings: Dict[str, Dict[int, List[Tuple[float, float]]]],
-) -> Dict[str, List[EchoPedsItem]]:
+) -> List[EchoPedsItem]:
     """
+    Load all items (no split usage).
     Only include samples with tracings AND exactly 2 traced frames.
     """
-    splits: Dict[str, List[EchoPedsItem]] = {"TRAIN": [], "VAL": [], "TEST": []}
+    items: List[EchoPedsItem] = []
     with open(filelist_csv, newline="") as f:
         r = csv.DictReader(f)
         for row in r:
-            base = row["FileName"].strip()
-            avi_name = base + ".avi"
+            avi_name = row["FileName"].strip()
+            base = avi_name.removesuffix(".avi")
 
             t = tracings.get(avi_name)
             if not t or len(t.keys()) != 2:
                 continue
 
-            split = _norm_split(row.get("Split", ""))
             video_path = os.path.join(videos_dir, avi_name)
 
             meta: Dict[str, Any] = {}
@@ -100,19 +89,18 @@ def load_split_items_peds(
                 except Exception:
                     meta[k] = v
 
-            meta["Split"] = split
+            # Keep view label in metadata
             meta["View"] = view
 
-            splits[split].append(
+            items.append(
                 EchoPedsItem(
                     video_path=video_path,
                     base=base,
-                    split=split,
                     view=view,
                     metadata=meta,
                 )
             )
-    return splits
+    return items
 
 
 # =========================
@@ -161,20 +149,20 @@ def _init_worker(tracings_by_view: Dict[str, Dict[str, Dict[int, List[Tuple[floa
             pass
     _G["tracings_by_view"] = tracings_by_view
 
-def _process_one_to_bytes(item: EchoPedsItem) -> Tuple[str, str, str, Optional[bytes], bool, bool]:
+def _process_one_to_bytes(item: EchoPedsItem) -> Tuple[str, str, Optional[bytes], bool, bool]:
     """
-    Returns: (view, split, base, payload_bytes_or_None, video_ok, labels_ok)
+    Returns: (view, base, payload_bytes_or_None, video_ok, labels_ok)
     labels_ok = computed ED/ES successfully.
     """
     tracings_by_view = _G["tracings_by_view"]
-    view, split, base = item.view, item.split, item.base
+    view, base = item.view, item.base
     video_path = item.video_path
     key = base + ".avi"
 
     tview = tracings_by_view.get(view, {})
     tracings_for_file = tview.get(key)
     if not tracings_for_file or len(tracings_for_file) != 2:
-        return (view, split, base, None, False, False)
+        return (view, base, None, False, False)
 
     # Decode video
     try:
@@ -186,24 +174,24 @@ def _process_one_to_bytes(item: EchoPedsItem) -> Tuple[str, str, str, Optional[b
             )
             v, _, info = read_video(video_path, pts_unit="sec")  # [T,H,W,C]
     except Exception:
-        return (view, split, base, None, False, True)
+        return (view, base, None, False, True)
 
     v_u8 = v.permute(0, 3, 1, 2).contiguous().to(torch.uint8).cpu()  # [T,C,H,W]
     T, C, H, W = v_u8.shape
 
     frames = sorted(tracings_for_file.keys())
     if len(frames) != 2:
-        return (view, split, base, None, True, False)
+        return (view, base, None, True, False)
 
     f0, f1 = int(frames[0]), int(frames[1])
     if not (0 <= f0 < T and 0 <= f1 < T):
-        return (view, split, base, None, True, False)
+        return (view, base, None, True, False)
 
     # Compute filled-polygon areas (ED larger, ES smaller)
     a0 = polygon_mask_area_from_points(tracings_for_file[f0], (H, W))
     a1 = polygon_mask_area_from_points(tracings_for_file[f1], (H, W))
     if a0 <= 0 or a1 <= 0:
-        return (view, split, base, None, True, False)
+        return (view, base, None, True, False)
 
     ed, es = (f0, f1) if a0 >= a1 else (f1, f0)
 
@@ -221,24 +209,24 @@ def _process_one_to_bytes(item: EchoPedsItem) -> Tuple[str, str, str, Optional[b
     payload: Dict[str, Any] = {
         "video": v_u8,
         "fps": fps,
-        "ED": int(ed), 
+        "ED": int(ed),
         "ES": int(es),
         "metadata": dict(item.metadata),
     }
 
     bio = io.BytesIO()
     torch.save(payload, bio)
-    return (view, split, base, bio.getvalue(), True, True)
+    return (view, base, bio.getvalue(), True, True)
 
 
 # =========================
-# Shard writer
+# Shard writer (by view only)
 # =========================
 
 class TarShardWriter:
-    def __init__(self, out_root: str, view: str, split: str, shard_size: int):
-        self.split_dir = os.path.join(out_root, view, split)
-        os.makedirs(self.split_dir, exist_ok=True)
+    def __init__(self, out_root: str, view: str, shard_size: int):
+        self.view_dir = os.path.join(out_root, view)
+        os.makedirs(self.view_dir, exist_ok=True)
         self.shard_size = int(shard_size)
         self.shard_idx = 0
         self.count_in_shard = 0
@@ -248,7 +236,7 @@ class TarShardWriter:
     def _open_new(self):
         if self.tar is not None:
             self.tar.close()
-        path = os.path.join(self.split_dir, f"shard-{self.shard_idx:05d}.tar")
+        path = os.path.join(self.view_dir, f"shard-{self.shard_idx:05d}.tar")
         self.tar = tarfile.open(path, mode="w")  # uncompressed
         self.count_in_shard = 0
         self.shard_idx += 1
@@ -270,10 +258,10 @@ class TarShardWriter:
 
 
 # =========================
-# Run
+# Run (whole dataset, per view)
 # =========================
 
-def preprocess_peds_sharded(
+def preprocess_peds_sharded_all(
     data_root: str,
     out_root: str,
     views: Tuple[str, ...] = ("A4C", "PSAX"),
@@ -283,18 +271,17 @@ def preprocess_peds_sharded(
     chunksize: int = 4,
     shard_size: int = 256,
 ):
-    # optional cleanup
+    # optional cleanup (remove shards under each view)
     if overwrite and os.path.isdir(out_root):
         for view in views:
-            for sp in ("TRAIN", "VAL", "TEST"):
-                d = os.path.join(out_root, view, sp)
-                if os.path.isdir(d):
-                    for fn in os.listdir(d):
-                        if fn.endswith(".tar"):
-                            try:
-                                os.remove(os.path.join(d, fn))
-                            except OSError:
-                                pass
+            d = os.path.join(out_root, view)
+            if os.path.isdir(d):
+                for fn in os.listdir(d):
+                    if fn.endswith(".tar"):
+                        try:
+                            os.remove(os.path.join(d, fn))
+                        except OSError:
+                            pass
 
     tracings_by_view: Dict[str, Dict[str, Dict[int, List[Tuple[float, float]]]]] = {}
     tasks: List[EchoPedsItem] = []
@@ -308,13 +295,10 @@ def preprocess_peds_sharded(
         tracings = load_tracings_polygons_xy(tracings_csv)
         tracings_by_view[view] = tracings
 
-        splits = load_split_items_peds(filelist_csv, videos_dir, view=view, tracings=tracings)
-        tasks.extend(splits["TRAIN"] + splits["VAL"] + splits["TEST"])
+        items = load_items_peds_all(filelist_csv, videos_dir, view=view, tracings=tracings)
+        tasks.extend(items)
 
-    writers: Dict[Tuple[str, str], TarShardWriter] = {}
-    for view in views:
-        for sp in ("TRAIN", "VAL", "TEST"):
-            writers[(view, sp)] = TarShardWriter(out_root, view, sp, shard_size)
+    writers: Dict[str, TarShardWriter] = {view: TarShardWriter(out_root, view, shard_size) for view in views}
 
     ctx = mp.get_context("spawn")
     with ctx.Pool(
@@ -325,7 +309,7 @@ def preprocess_peds_sharded(
         it = pool.imap_unordered(_process_one_to_bytes, tasks, chunksize=chunksize)
 
         v_ok = v_fail = lbl_ok = lbl_fail = 0
-        for view, split, base, payload_bytes, video_ok, labels_ok in tqdm(
+        for view, base, payload_bytes, video_ok, labels_ok in tqdm(
             it, total=len(tasks), desc="Preprocessing Peds (ED/ES via polygon area)", unit="video"
         ):
             if payload_bytes is None:
@@ -333,7 +317,7 @@ def preprocess_peds_sharded(
                 lbl_fail += int(not labels_ok)
                 continue
 
-            writers[(view, split)].add_bytes(base, payload_bytes)
+            writers[view].add_bytes(base, payload_bytes)
             v_ok += int(video_ok)
             lbl_ok += int(labels_ok)
 
@@ -342,17 +326,17 @@ def preprocess_peds_sharded(
 
     print(f"videos ok={v_ok} fail={v_fail}")
     print(f"labels ok={lbl_ok} fail/skip={lbl_fail}")
-    print(f"output: {out_root}/<A4C|PSAX>/<TRAIN|VAL|TEST>/shard-*.tar")
+    print(f"output: {out_root}/<A4C|PSAX>/shard-*.tar")
 
 
 if __name__ == "__main__":
-    preprocess_peds_sharded(
+    preprocess_peds_sharded_all(
         data_root="./data/echonetpediatric",
         out_root="./data/echonetpediatric/echoshards",
         views=("A4C", "PSAX"),
         overwrite=True,
         video_backend=None,
-        processes=48,
+        processes=32,
         chunksize=4,
         shard_size=256,
     )

@@ -9,7 +9,6 @@ import os
 import numpy as np
 from tqdm import tqdm
 import json
-from math import ceil
 from tasks.Compute_EDES import EDES_via_Phase, EDES_via_LMP, EDES_via_Norm
 from scipy.signal import detrend
 
@@ -45,7 +44,7 @@ dl = DataLoader(
 )
 
 ### Run
-problems = {}; errors = []
+problems = {}; errors = []; ms_errors = []
 with torch.inference_mode():
     for i, batch in tqdm(enumerate(dl)):
         # if i < 80:
@@ -60,15 +59,16 @@ with torch.inference_mode():
 
         with torch.autocast('cuda', torch.bfloat16, enabled=autocast):
             z = model.encode(videos)
-            z_spline = model.spline_fit_and_eval(z, timestamps, timestamps)
         z = z.squeeze(0).cpu().numpy()
-        z_spline = z_spline.squeeze(0).cpu().numpy()
-        timestamps = timestamps.squeeze(0).cpu().numpy()
         z = detrend(z, axis=0, type='linear')
-        z_spline = detrend(z_spline, axis=0, type='linear')
+
         try:
-            ed_err, es_err = EDES_via_Phase(z, z_spline, timestamps, fps, gt_ed, gt_es)
+            ed_err, es_err = EDES_via_Phase(z, gt_ed, gt_es)
             errors.append([i, ed_err, es_err])
+            if fps is not None:
+                ed_ms_err = ed_err * (1000.0 / fps)
+                es_ms_err = es_err * (1000.0 / fps)
+                ms_errors.append([i, ed_ms_err, es_ms_err])
             # print(f"Sample index {i}: ED error = {ed_err:.2f} frames, ES error = {es_err:.2f} frames")
             # exit()
         except Exception as e:
@@ -86,7 +86,9 @@ for error, indices in problems.items():
     print(f"Error: {error} - Occurred in samples: {indices}")
 
 print(f"ED Error MAE: {np.mean([e[1] for e in errors]):.2f} frames, STD: {np.std([e[1] for e in errors]):.2f} frames")
+print(f"ED Error Time: {np.mean([e[1] for e in ms_errors]):.2f} ms, STD: {np.std([e[1] for e in ms_errors]):.2f} ms")
 print(f"ES Error MAE: {np.mean([e[2] for e in errors]):.2f} frames, STD: {np.std([e[2] for e in errors]):.2f} frames")
+print(f"ES Error Time: {np.mean([e[2] for e in ms_errors]):.2f} ms, STD: {np.std([e[2] for e in ms_errors]):.2f} ms")
 # print indices & errors of first 3 largest errors
 errors = np.array(errors)
 largest_errors = errors[np.argsort(errors[:, 1])[::-1][:3]]

@@ -152,11 +152,12 @@ def EF_collate(batch: List[Dict[str, Any]],
 def EDES_collate(batch):
     videos = torch.stack([sample["video"] for sample in batch], dim=0)          # [B,T,C,H,W]
     videos = videos * 2 - 1  # [0,1] → [-1,1]
-    timestamps = torch.stack([sample["timestamps"] for sample in batch], dim=0) # [B,T]
+    timestamps = torch.stack([sample.get("timestamps") for sample in batch], dim=0) \
+        if all(sample.get("timestamps") is not None for sample in batch) else None
 
     fps_list = []; ed_list = []; es_list = []
     for sample in batch:
-        fps_list.append(sample["fps"])
+        fps_list.append(sample.get("fps", None))
         ed_list.append(sample["ED"])
         es_list.append(sample["ES"])
         
