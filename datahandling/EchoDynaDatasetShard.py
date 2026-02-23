@@ -33,7 +33,7 @@ class EchoDynaVideoShardDataset(Dataset):
         device: Optional[torch.device] = None,      # keep None to load on CPU
         video_dtype: Optional[torch.dtype] = None,  # upcast after normalize if you want
         return_masks: bool = True,
-        require_masks: bool = False,                # drop samples without masks at build time
+        # require_masks: bool = False,                # drop samples without masks at build time
         weights_only: bool = True,
     ):
         self.split_dir = os.path.join(root, split.upper())
@@ -47,7 +47,7 @@ class EchoDynaVideoShardDataset(Dataset):
         self.device = device
         self.video_dtype = video_dtype
         self.return_masks = return_masks
-        self.require_masks = require_masks
+        # self.require_masks = require_masks
         self.weights_only = weights_only
 
         # Build member index once
@@ -59,33 +59,33 @@ class EchoDynaVideoShardDataset(Dataset):
                     if m.isfile() and m.name.endswith(".pt") and "/" not in m.name
                 ]
 
-                if not self.require_masks:
-                    self.index.extend((shard_path, m.name) for m in members)
-                    continue
+                # if not self.require_masks:
+                self.index.extend((shard_path, m.name) for m in members)
+                continue
 
                 # require_masks=True: only keep entries whose payload contains "masks"
-                for m in members:
-                    fobj = tf.extractfile(m)
-                    if fobj is None:
-                        continue
-                    data = fobj.read()
-                    try:
-                        payload = torch.load(
-                            io.BytesIO(data),
-                            map_location="cpu",
-                            weights_only=self.weights_only,
-                        )
-                    except Exception:
-                        # if it can't be loaded, skip it
-                        continue
+                # for m in members:
+                #     fobj = tf.extractfile(m)
+                #     if fobj is None:
+                #         continue
+                #     data = fobj.read()
+                #     try:
+                #         payload = torch.load(
+                #             io.BytesIO(data),
+                #             map_location="cpu",
+                #             weights_only=self.weights_only,
+                #         )
+                #     except Exception:
+                #         # if it can't be loaded, skip it
+                #         continue
 
-                    if isinstance(payload, dict) and ("masks" in payload):
-                        self.index.append((shard_path, m.name))
+                #     if isinstance(payload, dict) and ("masks" in payload):
+                #         self.index.append((shard_path, m.name))
 
         if not self.index:
             msg = f"Found shards but no valid .pt members in: {self.split_dir}"
-            if self.require_masks:
-                msg += " (after filtering for masks)"
+            # if self.require_masks:
+            #     msg += " (after filtering for masks)"
             raise RuntimeError(msg)
 
     def __len__(self) -> int:
@@ -103,8 +103,8 @@ class EchoDynaVideoShardDataset(Dataset):
         payload = torch.load(io.BytesIO(data), map_location="cpu", weights_only=self.weights_only)
 
         # If you require masks, fail loudly if something is inconsistent
-        if self.require_masks and "masks" not in payload:
-            raise KeyError(f"Sample {member_name} in {shard_path} has no 'masks' (index is inconsistent).")
+        # if self.require_masks and "masks" not in payload:
+        #     raise KeyError(f"Sample {member_name} in {shard_path} has no 'masks' (index is inconsistent).")
 
         video = payload["video"]  # uint8 [T,C,H,W]
 
@@ -121,6 +121,8 @@ class EchoDynaVideoShardDataset(Dataset):
         out = {
             "video": video,
             "timestamps": timestamps,
+            "ED": payload.get("ED", None),
+            "ES": payload.get("ES", None),
             "metadata": payload.get("metadata", {}),
             "fps": fps,
             "size": payload.get("size", None),
@@ -140,18 +142,18 @@ def load_echonet_dynamic_datasets(get_mask=False, root="data/echodyna/echoshards
         root, "TRAIN",
         video_dtype=torch.float32,
         return_masks=get_mask,
-        require_masks=get_mask,
+        # require_masks=get_mask,
     )
     val_ds   = EchoDynaVideoShardDataset(
         root, "VAL",
         video_dtype=torch.float32,
         return_masks=get_mask,
-        require_masks=get_mask,
+        # require_masks=get_mask,
     )
     test_ds  = EchoDynaVideoShardDataset(
         root, "TEST",
         video_dtype=torch.float32,
         return_masks=get_mask,
-        require_masks=get_mask,
+        # require_masks=get_mask,
     )
     return train_ds, val_ds, test_ds

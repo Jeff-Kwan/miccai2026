@@ -14,7 +14,7 @@ from tasks.Compute_EDES import EDES_via_Phase, EDES_via_LMP, EDES_via_Norm
 from scipy.signal import detrend
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_22/19_54_SAE"
+load_dir = "results/2026_02_23/11_25_SAE"
 
 # ---- Model ----
 config = json.load(open(os.path.join(load_dir, "config.json"), "r"))
@@ -33,7 +33,7 @@ autocast = config["training"].get("autocast", False)
 model = model.to(device).eval()
 
 # ---- Dataset ----
-train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
+train_ds, val_ds, test_ds = load_echonet_dynamic_datasets()
 
 dl = DataLoader(
     test_ds,
@@ -50,11 +50,10 @@ with torch.inference_mode():
     for i, batch in tqdm(enumerate(dl)):
         # if i < 80:
         #     continue
-        videos, timestamps, frames_idx, fps = batch
-        gt_es, gt_ed = frames_idx[0]
+        videos, timestamps, fps, ed, es = batch
         fps = float(fps[0])
-        gt_es = int(gt_es.item())
-        gt_ed = int(gt_ed.item())
+        gt_es = int(ed[0])
+        gt_ed = int(es[0])
 
         videos = videos.to(device, non_blocking=True)
         timestamps = timestamps.to(device, non_blocking=True)

@@ -33,7 +33,7 @@ model = SplineAutoEncoder(
 model.load_state_dict(torch.load(os.path.join(load_dir, "SAE.pth"), map_location=device))
 autocast = config["training"].get("autocast", False)
 
-train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
+train_ds, val_ds, test_ds = load_echonet_dynamic_datasets()
 
 
 idx = 53#random.randint(0, len(val_ds) - 1)

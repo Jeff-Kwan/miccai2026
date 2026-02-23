@@ -120,12 +120,10 @@ def eval_split(dl, split_name: str, autocast: bool, detector_fn, max_workers=Non
     ed_mae_list, es_mae_list, fps_all = [], [], []
 
     with torch.inference_mode():
-        for videos, timestamps, frames_idx, fps in tqdm(dl, desc=split_name):
-
-            gt_es, gt_ed = frames_idx[0]
+        for videos, timestamps, fps, ed, es in tqdm(dl, desc=split_name):
             fps = float(fps[0])
-            gt_es = int(gt_es.item())
-            gt_ed = int(gt_ed.item())
+            gt_es = int(ed[0])
+            gt_ed = int(es[0])
 
             videos = videos.to(device, non_blocking=True)
             timestamps = timestamps.to(device, non_blocking=True)
@@ -201,7 +199,7 @@ if __name__ == "__main__":
     model = model.to(device).eval()
 
     # ---- Dataset ----
-    train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
+    train_ds, val_ds, test_ds = load_echonet_dynamic_datasets()
 
     test_dl = DataLoader(
         test_ds,

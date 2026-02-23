@@ -21,7 +21,7 @@ from utils.topology import cohomology_circular_coords, plot_phase_and_z, plot_ph
 from tasks.Compute_EDES import EDES_via_Phase
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_22/18_28_SAE"
+load_dir = "results/2026_02_23/11_25_SAE"
 out_dir = os.path.join(load_dir, "topology")
 os.makedirs(out_dir, exist_ok=True)
 
@@ -46,9 +46,7 @@ idx = random.randint(0, len(test_ds) - 1)
 video = test_ds[idx]['video'].to(device).unsqueeze(0)
 video = video * 2 - 1  # [0,1] → [-1,1]
 timestamps = test_ds[idx]['timestamps'].unsqueeze(0).to(device)
-frames_idx = test_ds[idx]['masks']['frame_indices']
-gt_es = frames_idx[0].item(); gt_ed = frames_idx[1].item()
-fps = test_ds[idx]["metadata"]["FPS"]
+gt_ed = int(test_ds[idx]['ED']); gt_es = int(test_ds[idx]['ES']); fps = float(test_ds[idx]['fps'])
 
 t0 = timestamps.min(); t1 = timestamps.max(); T = timestamps.shape[1]
 dense_factor = 1
@@ -96,13 +94,14 @@ group2 = find_peaks(-z_proj, prominence=0.2*(np.max(z_proj)-np.min(z_proj)), dis
 peaks = np.concatenate([group1, group2])
 print(peaks)
 
-plot_phase_major_axis(z, t_dense, phase, out_dir, idx, frames_idx=frames_idx, peaks=peaks)
+plot_phase_major_axis(z, t_dense, phase, out_dir, idx, gt_ed=gt_ed, gt_es=gt_es, peaks=peaks)
 
 
 grid, mu = von_mises_kernel_smoother(z, phase, n_grid=512, kappa=30)
 z_phase_plane, pp_basis = project_to_phase_plane(z, phase)
 plt.scatter(z_phase_plane[:, 0], z_phase_plane[:, 1], c=phase, cmap='hsv', s=5)
-plt.scatter(z_phase_plane[frames_idx, 0], z_phase_plane[frames_idx, 1], c='black', s=50, label='ES/ED frames')
+plt.scatter(z_phase_plane[gt_ed, 0], z_phase_plane[gt_ed, 1], c='red', s=50, label='ED frame')
+plt.scatter(z_phase_plane[gt_es, 0], z_phase_plane[gt_es, 1], c='blue', s=50, label='ES frame')
 plt.colorbar(label='Phase')
 plt.title(f"Processed Z on Phase Plane")
 plt.xlabel("Phase Plane X")
@@ -114,7 +113,8 @@ z_phase_plane = z @ pp_basis
 mu_plane = mu @ pp_basis
 plt.scatter(z_phase_plane[:, 0], z_phase_plane[:, 1], c=phase, cmap='hsv', s=5)
 plt.plot(mu_plane[:, 0], mu_plane[:, 1], c='black', linewidth=2, label='Smoothed Trajectory')
-plt.scatter(z_phase_plane[frames_idx, 0], z_phase_plane[frames_idx, 1], c='red', marker='x', s=50, label='ES/ED frames')
+plt.scatter(z_phase_plane[gt_ed, 0], z_phase_plane[gt_ed, 1], c='red', marker='x', s=50, label='ED frame')
+plt.scatter(z_phase_plane[gt_es, 0], z_phase_plane[gt_es, 1], c='blue', marker='x', s=50, label='ES frame')
 plt.colorbar(label='Phase')
 plt.title(f"Actual Z on Phase Plane")
 plt.xlabel("Phase Plane X")
@@ -127,10 +127,10 @@ pca = PCA(n_components=3)
 z_3d = pca.fit_transform(z)
 mu_3d = pca.transform(mu)
 
-# plot_phase_and_z(z_3d, phase, out_dir, idx, dim="2d", gt_ed=gt_ed, frames_idx=frames_idx, mu=mu_3d)
-plot_phase_and_z(z_3d, phase, out_dir, idx, dim="3d", gt_ed=gt_ed, frames_idx=frames_idx, mu=mu_3d)
-plot_phase_and_time(phase, t_dense, out_dir, idx, sine=False, gt_ed=gt_ed, frames_idx=frames_idx, differentiate=0)
-# plot_phase_and_time(phase, t_dense, out_dir, idx, gt_ed=gt_ed, frames_idx=frames_idx, differentiate=1)
+# plot_phase_and_z(z_3d, phase, out_dir, idx, dim="2d", gt_ed=gt_ed, gt_es=gt_es, mu=mu_3d)
+plot_phase_and_z(z_3d, phase, out_dir, idx, dim="3d", gt_ed=gt_ed, gt_es=gt_es, mu=mu_3d)
+plot_phase_and_time(phase, t_dense, out_dir, idx, sine=False, gt_ed=gt_ed, gt_es=gt_es, differentiate=0)
+# plot_phase_and_time(phase, t_dense, out_dir, idx, gt_ed=gt_ed, gt_es=gt_es, differentiate=1)
 # plot_znorm_and_time(mu, t_dense, out_dir, idx, frames_idx=frames_idx)
 
 ed_phase = phase[gt_ed]; es_phase = phase[gt_es]

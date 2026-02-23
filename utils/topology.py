@@ -318,7 +318,7 @@ def von_mises_kernel_smoother(
 
 
 
-def plot_phase_and_z(z: np.ndarray, phase: np.ndarray, out_dir: str, index: int, gt_ed: int = None, frames_idx: list = None,
+def plot_phase_and_z(z: np.ndarray, phase: np.ndarray, out_dir: str, index: int, gt_ed: int = None, gt_es: int = None,
                      dim: str = "3d", mu: np.ndarray = None):
     if gt_ed is not None:
         ed_phase = phase[gt_ed]
@@ -329,9 +329,9 @@ def plot_phase_and_z(z: np.ndarray, phase: np.ndarray, out_dir: str, index: int,
     if dim == "2d":
         ax = fig.add_subplot(111)
         scatter = ax.scatter(z[:,0], z[:,1], c=phase, s=6, cmap="viridis")
-        if frames_idx is not None:
-            for f in frames_idx:
-                ax.scatter(z[f,0], z[f,1], color='red', marker="x", s=100, label="ES/ED", zorder=3)
+        if gt_ed is not None and gt_es is not None:
+            ax.scatter(z[gt_ed,0], z[gt_ed,1], color='red', marker="x", s=100, label="ED", zorder=3)
+            ax.scatter(z[gt_es,0], z[gt_es,1], color='green', marker="x", s=100, label="ES", zorder=3)
         if mu is not None:
             ax.plot(mu[:,0], mu[:,1], color='black', linewidth=2, label='Mean cycle')
         ax.set_title("Phase Color Plot of Z - PC1 & PC2")
@@ -340,9 +340,9 @@ def plot_phase_and_z(z: np.ndarray, phase: np.ndarray, out_dir: str, index: int,
     elif dim == "3d":
         ax = fig.add_subplot(111, projection='3d')
         scatter = ax.scatter(z[:,0], z[:,1], z[:,2], c=phase, s=10, cmap="viridis")
-        if frames_idx is not None:
-            for f in frames_idx:
-                ax.scatter(z[f,0], z[f,1], z[f,2], color='red', marker="x", s=100, label="ES/ED", zorder=3)
+        if gt_ed is not None and gt_es is not None:
+            ax.scatter(z[gt_ed,0], z[gt_ed,1], z[gt_ed,2], color='red', marker="x", s=100, label="ED", zorder=3)
+            ax.scatter(z[gt_es,0], z[gt_es,1], z[gt_es,2], color='green', marker="x", s=100, label="ES", zorder=3)
         if mu is not None:
             ax.plot(mu[:,0], mu[:,1], mu[:,2], color='black', linewidth=2, label='Mean cycle')
         ax.set_title("Phase Color Plot of Z - PC1, PC2 & PC3")
@@ -360,7 +360,7 @@ def plot_phase_and_z(z: np.ndarray, phase: np.ndarray, out_dir: str, index: int,
 
 
 def plot_phase_and_time(phase: np.ndarray, timestamps: np.ndarray, out_dir: str, 
-                        index: int, frames_idx: list = None, gt_ed: int = None,
+                        index: int, gt_ed: int = None, gt_es: int = None,
                         sine: bool = True, differentiate: int = 0):
     if gt_ed is not None:
         ed_phase = phase[gt_ed]
@@ -374,9 +374,9 @@ def plot_phase_and_time(phase: np.ndarray, timestamps: np.ndarray, out_dir: str,
 
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.scatter(timestamps, phase, color='blue', s=3)
-    if frames_idx is not None:
-        plt.axvline(x=timestamps[frames_idx[1]], color='blue', linestyle='--', label='Ground Truth ED')
-        plt.axvline(x=timestamps[frames_idx[0]], color='green', linestyle='--', label='Ground Truth ES')
+    if gt_ed is not None and gt_es is not None:
+        plt.axvline(x=timestamps[gt_ed], color='blue', linestyle='--', label='Ground Truth ED')
+        plt.axvline(x=timestamps[gt_es], color='green', linestyle='--', label='Ground Truth ES')
     phase_vals = [-1, 0, 1] if sine else [0, np.pi/2, np.pi, 3*np.pi/2, 2*np.pi]
     for phase_val in phase_vals:
         ax.axhline(phase_val, color='gray', linestyle='--', linewidth=0.5)
@@ -395,13 +395,13 @@ def plot_phase_and_time(phase: np.ndarray, timestamps: np.ndarray, out_dir: str,
     plt.close()
 
 
-def plot_znorm_and_time(z: np.ndarray, timestamps: np.ndarray, out_dir: str, index: int, frames_idx: list = None):
+def plot_znorm_and_time(z: np.ndarray, timestamps: np.ndarray, out_dir: str, index: int, gt_ed: int = None, gt_es: int = None):
     z_norm = np.linalg.norm(z, axis=1)
     fig, ax = plt.subplots(figsize=(10, 4))
     ax.plot(timestamps, z_norm, color='green', linewidth=1)
-    if frames_idx is not None:
-        plt.axvline(x=timestamps[frames_idx[1]], color='blue', linestyle='--', label='Ground Truth ED')
-        plt.axvline(x=timestamps[frames_idx[0]], color='green', linestyle='--', label='Ground Truth ES')
+    if gt_ed is not None and gt_es is not None:
+        plt.axvline(x=timestamps[gt_ed], color='blue', linestyle='--', label='Ground Truth ED')
+        plt.axvline(x=timestamps[gt_es], color='green', linestyle='--', label='Ground Truth ES')
     ax.set_xlabel("Time (s)")
     ax.set_ylabel("Norm of z")
     plt.legend()
@@ -412,7 +412,7 @@ def plot_znorm_and_time(z: np.ndarray, timestamps: np.ndarray, out_dir: str, ind
 
 
 def plot_phase_major_axis(z: np.ndarray, timestamps: np.ndarray, phase: np.ndarray, out_dir: str, index: int, 
-                          frames_idx: list = None, peaks: list = None):
+                          gt_ed: int = None, gt_es: int = None, peaks: list = None):
     major_axis = find_phase_major_axis(z, phase)
     z_proj = z @ major_axis
     plt.scatter(timestamps, z_proj, c=phase, cmap='hsv', s=5)
@@ -421,9 +421,9 @@ def plot_phase_major_axis(z: np.ndarray, timestamps: np.ndarray, phase: np.ndarr
     cbar.ax.set_yticklabels(['0', 'π', '2π'])
     plt.xlabel('Time (s)')
     plt.ylabel('Projection on Major Axis')
-    if frames_idx is not None:
-        plt.axvline(x=timestamps[frames_idx[1]], color='blue', linestyle='--', label='Ground Truth ED')
-        plt.axvline(x=timestamps[frames_idx[0]], color='green', linestyle='--', label='Ground Truth ES')
+    if gt_ed is not None and gt_es is not None:
+        plt.axvline(x=timestamps[gt_ed], color='blue', linestyle='--', label='Ground Truth ED')
+        plt.axvline(x=timestamps[gt_es], color='green', linestyle='--', label='Ground Truth ES')
     if peaks is not None:
         for p in peaks:
             plt.scatter(timestamps[p], z_proj[p], color='black', marker="x", s=50, label="Peaks", zorder=3)
