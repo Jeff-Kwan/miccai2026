@@ -153,15 +153,26 @@ for epoch in range(epochs):
 
     pbar = tqdm(train_dl, desc=f"Epoch {epoch+1}/{epochs}")
     for batch in pbar:
-        in_frames = batch["in_frames"].to(device)  # [B, T, C, H, W]
-        in_timestamps = batch["in_timestamps"].to(device)  # [B, T]
-        out_frames = batch["out_frames"].to(device)  # [B, T, C, H, W]
-        out_timestamps = batch["out_timestamps"].to(device)  # [B, T]
+        A_frames = batch["in_frames"].to(device)  # [B, T, C, H, W]
+        A_timestamps = batch["in_timestamps"].to(device)  # [B, T]
+        B_frames = batch["out_frames"].to(device)  # [B, T, C, H, W]
+        B_timestamps = batch["out_timestamps"].to(device)  # [B, T]
+        _, _, _, H, W = A_frames.shape
+
+        all_frames_in = torch.cat([A_frames, B_frames], dim=0)
+        all_frames_out = torch.cat([B_frames, A_frames], dim=0)
+        all_t_in = torch.cat([A_timestamps, B_timestamps], dim=0)
+        all_t_out = torch.cat([B_timestamps, A_timestamps], dim=0)
 
         optimizer.zero_grad(set_to_none=True)
-        with torch.autocast('cuda', dtype=torch.bfloat16, enabled=autocast):
-            recon, z_reg = model(in_frames, in_timestamps, out_timestamps)
-            recon_loss = criterion(recon, out_frames)
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast):
+            # A-B partition cross-consistency
+            recon, z_in, z_spline = model(all_frames_in, all_t_in, all_t_out)
+            z_inA, z_inB = z_in.chunk(2, dim=0)
+            z_splineA, z_splineB = z_spline.chunk(2, dim=0)
+
+            recon_loss = criterion(recon, all_frames_out)
+            z_reg = (z_inA - z_splineB).pow(2).sum(dim=-1).mean() + (z_inB - z_splineA).pow(2).sum(dim=-1).mean()
             loss = recon_loss + config["training"]["reg"] * z_reg
 
         loss.backward()
@@ -188,15 +199,26 @@ for epoch in range(epochs):
     with torch.no_grad():
         vbar = tqdm(val_dl, desc=f"Val {epoch+1}/{epochs}", leave=False)
         for batch in vbar:
-            in_frames = batch["in_frames"].to(device)
-            in_timestamps = batch["in_timestamps"].to(device)
-            out_frames = batch["out_frames"].to(device)
-            out_timestamps = batch["out_timestamps"].to(device)
+            A_frames = batch["in_frames"].to(device)  # [B, T, C, H, W]
+            A_timestamps = batch["in_timestamps"].to(device)  # [B, T]
+            B_frames = batch["out_frames"].to(device)  # [B, T, C, H, W]
+            B_timestamps = batch["out_timestamps"].to(device)  # [B, T]
+            _, _, _, H, W = A_frames.shape
 
-            with torch.autocast('cuda', dtype=torch.bfloat16, enabled=autocast):
-                recon, z_reg = model(in_frames, in_timestamps, out_timestamps)
-                recon_loss = criterion(recon, out_frames)
-                val_loss = recon_loss + config["training"]["reg"] * z_reg
+            all_frames_in = torch.cat([A_frames, B_frames], dim=0)
+            all_frames_out = torch.cat([B_frames, A_frames], dim=0)
+            all_t_in = torch.cat([A_timestamps, B_timestamps], dim=0)
+            all_t_out = torch.cat([B_timestamps, A_timestamps], dim=0)
+            
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=autocast):
+                # A-B partition cross-consistency
+                recon, z_in, z_spline = model(all_frames_in, all_t_in, all_t_out)
+                z_inA, z_inB = z_in.chunk(2, dim=0)
+                z_splineA, z_splineB = z_spline.chunk(2, dim=0)
+
+                recon_loss = criterion(recon, all_frames_out)
+                z_reg = (z_inA - z_splineB).pow(2).sum(dim=-1).mean() + (z_inB - z_splineA).pow(2).sum(dim=-1).mean()
+                loss = recon_loss + config["training"]["reg"] * z_reg
 
             val_running += recon_loss.item() * config["training"]["batch_size"]
             val_z_reg_running += z_reg.item() * config["training"]["batch_size"]
