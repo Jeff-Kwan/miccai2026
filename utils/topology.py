@@ -12,6 +12,7 @@ from scipy.interpolate import interp1d
 from scipy.sparse import csr_matrix, diags, csgraph, coo_matrix
 from scipy.sparse.linalg import eigsh
 from scipy.ndimage import gaussian_filter1d
+from sklearn.manifold import SpectralEmbedding
 
 
 #####
@@ -52,105 +53,131 @@ def preprocess_z(z):
 # Topological
 #####
 
-def laplacian_phase(
-    X: np.ndarray,
-    k: int = 15,
-    eps: float = 1e-12,
-    n_eigs: int = 6,
-):
-    """Graph-Laplacian (diffusion-map style) phase for a quasi-1D loop manifold."""
-    if X.ndim != 2:
-        raise ValueError("X must be [T, D]")
-    T = X.shape[0]
-    if k < 2:
-        raise ValueError("k must be >= 2")
-    if T < max(10, k + 2):
-        raise ValueError(f"Need more points than kNN. Got T={T}, k={k}.")
-    if n_eigs < 4:
-        raise ValueError("n_eigs should be >= 4 for reliable pair selection")
-
-    # # ---- preprocessing ----
-    # X = preprocess_z(X)
-
-    # # ---- kNN graph (directed) ----
-    # dists, idx = NearestNeighbors(n_neighbors=k+1, metric='cosine').fit(X).kneighbors(X)
-    # dists, idx = dists[:, 1:], idx[:, 1:]  # drop self
-    # cos_sim = 1.0 - dists   # [1.0, -1.0]
-    # w_knn = cos_sim.clip(min=0.0) ** 2.0
-
-    # # ---- Mutual & Symmetric ----
-    # rows = np.repeat(np.arange(T), k)
-    # cols = idx.reshape(-1)
-    # dat  = w_knn.reshape(-1)
-
-    # # weighted directed adjacency
-    # W = coo_matrix((dat, (rows, cols)), shape=(T, T)).tocsr()
+def laplacian_phase(X: np.ndarray):
+    """Spectral embedding to assign geometric phase"""
+    # Unit Tangent Space
     X = detrend(X, axis=0, type='linear')
-    dX = savgol_filter(X, deriv=1, window_length=11, polyorder=3, axis=0)
-    dX = dX / np.linalg.norm(dX, axis=-1, keepdims=True)
+    X = savgol_filter(X, deriv=1, window_length=11, polyorder=3, axis=0)
     X = X / np.linalg.norm(X, axis=-1, keepdims=True)
-    W = csr_matrix(((X @ X.T).clip(min=0.0) * (dX @ dX.T).clip(min=0.0)))
-    W = W - diags(W.diagonal())
 
-    # keep only mutual edges: (i->j) AND (j->i)
-    mutual = W.multiply(W.T) > 0        # nonzero only where both directions exist
-    W = W.multiply(mutual)              # keep weights only on mutual edges
+    spectral_embedding = SpectralEmbedding(
+        n_components=2, 
+        n_neighbors=15, 
+        affinity='nearest_neighbors',
+        # affinity='rbf',
+        # gamma=0.5,
+        n_jobs=-1)
+    evecs = spectral_embedding.fit_transform(X)
 
-    # symmetrize
-    W = (W + W.T) * 0.5
-
-    # Lazy random walk
-    W = W + diags(np.full(T, 1e-4), format="csr")
-
-    deg = np.asarray(W.sum(axis=1)).ravel()
-    if np.any(deg <= eps):
-        raise ValueError("Graph has near-zero degree nodes")
-    W.eliminate_zeros()
-
-    # ---- normalized Laplacian ----
-    L = csgraph.laplacian(W, normed=True)
-
-    # ---- eigensolve ----
-    m = min(int(n_eigs), T - 2)
-    try:
-        evals, evecs = eigsh(L, k=m, which="SA")
-    except Exception:
-        evals, evecs = eigsh(L, k=m, sigma=0.0, which="LM")
-
-    order = np.argsort(evals)
-    evals, evecs = evals[order], evecs[:, order]
-
-    # ---- choose eigenvector pair ----
-    # upper = min(m, 8)
-    # best_score, best_pair = -np.inf, None
-    # for i in range(1, upper):
-    #     a = evecs[:, i]
-    #     for j in range(i + 1, upper):
-    #         b = evecs[:, j]
-    #         r = np.hypot(a, b) + eps
-    #         r_cv = r.std() / (r.mean() + eps)
-    #         spread = a.std() + b.std()
-    #         lam_gap = abs(evals[j] - evals[i]) / (abs(evals[i]) + abs(evals[j]) + eps)
-    #         score = -r_cv + 0.1 * spread - 0.1 * lam_gap
-    #         if score > best_score:
-    #             best_score, best_pair = score, (i, j)
-
-    # if best_pair is None:
-    #     raise RuntimeError("Could not find a suitable eigenvector pair for phase.")
-
-    # i, j = best_pair
-    i, j = 1, 2
-
-    # Smooth to encourage monotonicity & reduce noise sensitivity
-    a_s = gaussian_filter1d(evecs[:, i], sigma=1.0, axis=0)
-    b_s = gaussian_filter1d(evecs[:, j], sigma=1.0, axis=0)
+    # Light smoothing for better monotonicity & reduce noise sensitivity
+    a_s = gaussian_filter1d(evecs[:, 0], sigma=0.5, axis=0)
+    b_s = gaussian_filter1d(evecs[:, 1], sigma=0.5, axis=0)
     theta = np.arctan2(b_s, a_s)
 
-    # --- enforce increasing phase over time (sign convention) ---
+    # Sign convention: enforce increasing phase over time
     if np.nanmean(np.diff(np.unwrap(theta))) < 0:
-        theta = -theta              # flip orientation
+        theta = -theta
+    return theta, evecs
 
-    return theta, evals, evecs
+# def laplacian_phase(
+#     X: np.ndarray,
+#     k: int = 15,
+#     eps: float = 1e-12,
+#     n_eigs: int = 6,
+# ):
+#     """Graph-Laplacian (diffusion-map style) phase for a quasi-1D loop manifold."""
+#     if X.ndim != 2:
+#         raise ValueError("X must be [T, D]")
+#     T = X.shape[0]
+#     if k < 2:
+#         raise ValueError("k must be >= 2")
+#     if T < max(10, k + 2):
+#         raise ValueError(f"Need more points than kNN. Got T={T}, k={k}.")
+#     if n_eigs < 4:
+#         raise ValueError("n_eigs should be >= 4 for reliable pair selection")
+
+#     # # ---- preprocessing ----
+#     # X = preprocess_z(X)
+
+#     # # ---- kNN graph (directed) ----
+#     # dists, idx = NearestNeighbors(n_neighbors=k+1, metric='cosine').fit(X).kneighbors(X)
+#     # dists, idx = dists[:, 1:], idx[:, 1:]  # drop self
+#     # cos_sim = 1.0 - dists   # [1.0, -1.0]
+#     # w_knn = cos_sim.clip(min=0.0) ** 2.0
+
+#     # # ---- Mutual & Symmetric ----
+#     # rows = np.repeat(np.arange(T), k)
+#     # cols = idx.reshape(-1)
+#     # dat  = w_knn.reshape(-1)
+
+#     # # weighted directed adjacency
+#     # W = coo_matrix((dat, (rows, cols)), shape=(T, T)).tocsr()
+#     X = detrend(X, axis=0, type='linear')
+#     dX = savgol_filter(X, deriv=1, window_length=11, polyorder=3, axis=0)
+#     dX = dX / np.linalg.norm(dX, axis=-1, keepdims=True)
+#     X = X / np.linalg.norm(X, axis=-1, keepdims=True)
+#     W = csr_matrix(((X @ X.T).clip(min=0.0) * (dX @ dX.T).clip(min=0.0)))
+#     W = W - diags(W.diagonal())
+
+#     # keep only mutual edges: (i->j) AND (j->i)
+#     mutual = W.multiply(W.T) > 0        # nonzero only where both directions exist
+#     W = W.multiply(mutual)              # keep weights only on mutual edges
+
+#     # symmetrize
+#     W = (W + W.T) * 0.5
+
+#     # Lazy random walk
+#     W = W + diags(np.full(T, 1e-4), format="csr")
+
+#     deg = np.asarray(W.sum(axis=1)).ravel()
+#     if np.any(deg <= eps):
+#         raise ValueError("Graph has near-zero degree nodes")
+#     W.eliminate_zeros()
+
+#     # ---- normalized Laplacian ----
+#     L = csgraph.laplacian(W, normed=True)
+
+#     # ---- eigensolve ----
+#     m = min(int(n_eigs), T - 2)
+#     try:
+#         evals, evecs = eigsh(L, k=m, which="SA")
+#     except Exception:
+#         evals, evecs = eigsh(L, k=m, sigma=0.0, which="LM")
+
+#     order = np.argsort(evals)
+#     evals, evecs = evals[order], evecs[:, order]
+
+#     # ---- choose eigenvector pair ----
+#     # upper = min(m, 8)
+#     # best_score, best_pair = -np.inf, None
+#     # for i in range(1, upper):
+#     #     a = evecs[:, i]
+#     #     for j in range(i + 1, upper):
+#     #         b = evecs[:, j]
+#     #         r = np.hypot(a, b) + eps
+#     #         r_cv = r.std() / (r.mean() + eps)
+#     #         spread = a.std() + b.std()
+#     #         lam_gap = abs(evals[j] - evals[i]) / (abs(evals[i]) + abs(evals[j]) + eps)
+#     #         score = -r_cv + 0.1 * spread - 0.1 * lam_gap
+#     #         if score > best_score:
+#     #             best_score, best_pair = score, (i, j)
+
+#     # if best_pair is None:
+#     #     raise RuntimeError("Could not find a suitable eigenvector pair for phase.")
+
+#     # i, j = best_pair
+#     i, j = 1, 2
+
+#     # Smooth to encourage monotonicity & reduce noise sensitivity
+#     a_s = gaussian_filter1d(evecs[:, i], sigma=1.0, axis=0)
+#     b_s = gaussian_filter1d(evecs[:, j], sigma=1.0, axis=0)
+#     theta = np.arctan2(b_s, a_s)
+
+#     # --- enforce increasing phase over time (sign convention) ---
+#     if np.nanmean(np.diff(np.unwrap(theta))) < 0:
+#         theta = -theta              # flip orientation
+
+#     return theta, evals, evecs
 
 
 

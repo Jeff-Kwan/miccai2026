@@ -15,7 +15,7 @@ import json
 from math import ceil
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_22/10_48_SAE"
+load_dir = "results/2026_02_23/15_20_SAE"
 output_dir = os.path.join(load_dir, "reconstructions")
 os.makedirs(output_dir, exist_ok=True)
 
@@ -33,15 +33,15 @@ model = SplineAutoEncoder(
 model.load_state_dict(torch.load(os.path.join(load_dir, "SAE.pth"), map_location=device))
 autocast = config["training"].get("autocast", False)
 
-train_ds, val_ds, test_ds = load_echonet_dynamic_datasets()
+_, _, test_ds = load_echonet_dynamic_datasets()
 
 
-idx = 53#random.randint(0, len(val_ds) - 1)
-video = val_ds[idx]['video'].to(device).unsqueeze(0)
+idx = 1053#random.randint(0, len(val_ds) - 1)
+video = test_ds[idx]['video'].to(device).unsqueeze(0)
 video = video * 2 - 1  # [0,1] → [-1,1]
-timestamps = val_ds[idx]['timestamps'].unsqueeze(0).to(device)
-frames_idx = val_ds[idx]['masks']['frame_indices']
-
+timestamps = test_ds[idx]['timestamps'].unsqueeze(0).to(device)
+gt_ed = int(test_ds[idx]['ED']); gt_es = int(test_ds[idx]['ES']); fps = float(test_ds[idx]['fps'])
+duration = 1.0 / fps  # seconds per frame for GIF
 
 # Reconstruction
 B, T, C, H, W = video.shape
@@ -52,9 +52,6 @@ with torch.inference_mode():
         reconstruction = model.decode(z, H, W)
         z_motion = z - z.mean(dim=1, keepdim=True) # Remove static component
 
-# Get FPS from dataset metadata
-fps = val_ds[idx]["metadata"]["FPS"]
-duration = 1.0 / fps  # seconds per frame for GIF
 
 # Prepare tensors
 video = video.squeeze(0).permute(0, 2, 3, 1)
@@ -106,7 +103,7 @@ gif_path = os.path.join(output_dir, f"{idx}-reconstruction.gif")
 imageio.mimsave(gif_path, frames, duration=duration)
 
 
-def plot_colormap_trajectory(x, y, t, title, xlabel, ylabel, save_path, frames_idx,
+def plot_colormap_trajectory(x, y, t, title, xlabel, ylabel, save_path, gt_ed, gt_es,
                              cmap="coolwarm"):
     """
     x, y: arrays of shape (T,)
@@ -138,8 +135,8 @@ def plot_colormap_trajectory(x, y, t, title, xlabel, ylabel, save_path, frames_i
     ax_traj.add_collection(lc)
     ax_traj.scatter(x[0], y[0], color="blue", label="t=0", zorder=3)
     ax_traj.scatter(x[-1], y[-1], color="red", label="t=T", zorder=3)
-    for f in frames_idx:
-        ax_traj.scatter(x[f], y[f], color="green", marker="x", s=100, label="ES/ED", zorder=3)
+    ax_traj.scatter(x[gt_ed], y[gt_ed], color="green", marker="x", s=100, label="ED", zorder=3)
+    ax_traj.scatter(x[gt_es], y[gt_es], color="purple", marker="x", s=100, label="ES", zorder=3)
 
     pad_x = (x.max() - x.min()) * 0.05 if x.max() > x.min() else 1.0
     pad_y = (y.max() - y.min()) * 0.05 if y.max() > y.min() else 1.0
@@ -154,16 +151,16 @@ def plot_colormap_trajectory(x, y, t, title, xlabel, ylabel, save_path, frames_i
 
     ax_x = fig.add_subplot(gs[1, 0])
     ax_x.scatter(t, x, color="black", s=1)
-    for f in frames_idx:
-        ax_x.scatter(t[f], x[f], color="green", marker="x", s=100, label="ES/ED", zorder=3)
+    ax_x.scatter(t[gt_ed], x[gt_ed], color="green", marker="x", s=100, label="ED", zorder=3)
+    ax_x.scatter(t[gt_es], x[gt_es], color="purple", marker="x", s=100, label="ES", zorder=3)
     ax_x.set_xlabel("Time (sec)")
     ax_x.set_ylabel("D1")
     ax_x.grid(True, linestyle=":", alpha=0.6)
 
     ax_y = fig.add_subplot(gs[1, 1])
     ax_y.scatter(t, y, color="black", s=1)
-    for f in frames_idx:
-        ax_y.scatter(t[f], y[f], color="green", marker="x", s=100, label="ES/ED", zorder=3)
+    ax_y.scatter(t[gt_ed], y[gt_ed], color="green", marker="x", s=100, label="ED", zorder=3)
+    ax_y.scatter(t[gt_es], y[gt_es], color="purple", marker="x", s=100, label="ES", zorder=3)
     ax_y.set_xlabel("Time (sec)")
     ax_y.set_ylabel("D2")
     ax_y.grid(True, linestyle=":", alpha=0.6)
@@ -180,4 +177,5 @@ plot_colormap_trajectory(
     ylabel="D2",
     save_path=os.path.join(output_dir, f"{idx}-z_motion_trajectory.png"),
     cmap="coolwarm",
-    frames_idx=frames_idx)
+    gt_ed=gt_ed,
+    gt_es=gt_es)

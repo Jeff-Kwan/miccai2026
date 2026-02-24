@@ -163,27 +163,14 @@ def EDES_collate(batch):
         
     return videos, timestamps, fps_list, ed_list, es_list
 
-def Traj_collate(batch):
-    videos = torch.stack([sample["video"] for sample in batch], dim=0)          # [B,T,C,H,W]
-    videos = videos * 2 - 1  # [0,1] → [-1,1]
-    timestamps = torch.stack([sample["timestamps"] for sample in batch], dim=0) # [B,T]
-
-    frames_idx = []; fps_list = []
-    for sample in batch:
-        fi = sample["masks"]["frame_indices"]
-        if fi is None:
-            fi = torch.empty((0,), dtype=torch.long)
-        else:
-            fi = fi.long()
-        frames_idx.append(fi)
-        fps_list.append(sample["metadata"]["FPS"])
-        
+def Traj_collate(batch):       
+    # Strictly batch size 1
     return {
-        "video": videos,
-        "timestamps": timestamps,
-        "frame_indices": frames_idx,
-        "fps": fps_list,
-        "metadata": [sample["metadata"] for sample in batch],
+        "video": batch[0]["video"] * 2 - 1,
+        "ED": batch[0]["ED"],
+        "ES": batch[0]["ES"],
+        "fps": batch[0]["fps"],
+        "metadata": batch[0]["metadata"],
     }
 
 
