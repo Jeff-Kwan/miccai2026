@@ -8,23 +8,17 @@ from models.SplineAutoEncoder import SplineAutoEncoder
 from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
 import os
 import json
-from math import ceil
-import random
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
-import umap
-from scipy.signal import savgol_filter, find_peaks
-from utils.topology import cohomology_circular_coords, plot_phase_and_z, plot_phase_and_time, \
-        plot_znorm_and_time, plot_phase_major_axis, laplacian_phase, highpass_filter, detrend, \
-        find_phase_major_axis, project_to_phase_plane, von_mises_kernel_smoother
-from tasks.Compute_EDES import EDES_via_Phase
+from scipy.signal import detrend, savgol_filter
+from utils.topology import laplacian_phase, project_to_major_axis, von_mises_kernel_smoother
+from tasks.Compute_EDES import find_peaks_sentinel
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 load_dir = "results/2026_02_23/15_20_SAE"
-out_dir = os.path.join(load_dir, "topology")
+out_dir = os.path.join(load_dir, "sample")
 os.makedirs(out_dir, exist_ok=True)
-
 
 config = json.load(open(os.path.join(load_dir, "config.json"), "r"))
 mcfg = config["model"]
@@ -37,66 +31,98 @@ model = SplineAutoEncoder(
     lam=config["model"]["lam"],
 ).to(device)
 model.load_state_dict(torch.load(os.path.join(load_dir, "SAE.pth"), map_location=device))
-autocast = config["training"].get("autocast", False)
 
-train_ds, val_ds, test_ds = load_echonet_dynamic_datasets(get_mask=True)
+_, _, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
-
-idx = 20#random.randint(0, len(test_ds) - 1)
+idx = 20
 video = test_ds[idx]['video'].to(device).unsqueeze(0)
 video = video * 2 - 1  # [0,1] → [-1,1]
 timestamps = test_ds[idx]['timestamps'].unsqueeze(0).to(device)
 gt_ed = int(test_ds[idx]['ED']); gt_es = int(test_ds[idx]['ES']); fps = float(test_ds[idx]['fps'])
-
-t0 = timestamps.min(); t1 = timestamps.max(); T = timestamps.shape[1]
-dense_factor = 1
-t_dense = torch.linspace(t0, t1, (T-1)*dense_factor+1, device=device).unsqueeze(0)
-print(f"Video has {T} frames, from {t0:.2f}s to {t1:.2f}s at {fps:.2f} FPS. Dense timestamps has shape {t_dense.shape}.")
-
-# Reconstruction
 B, T, C, H, W = video.shape
 with torch.inference_mode():
-    with torch.autocast('cuda', torch.bfloat16, enabled=autocast):
-        z = model.encode(video)
-        z_spline = model.spline_fit_and_eval(z, timestamps, t_dense)
-z = (z - z.mean(dim=1, keepdim=True)).squeeze(0).cpu().numpy()
-z_spline = (z_spline - z_spline.mean(dim=1, keepdim=True)).squeeze(0).cpu().numpy()
-timestamps = timestamps.squeeze(0).cpu().numpy()
-t_dense = t_dense.squeeze(0).cpu().numpy()  # [T_dense]
+    z = model.encode(video)
+    recon = model.decode(z, H=H, W=W)
+z = z.squeeze().cpu().numpy()
+timestamps = timestamps.squeeze().cpu().numpy()
+recon = recon.squeeze().permute(0, 2, 3, 1).cpu().numpy()
+video = video.squeeze().permute(0, 2, 3, 1).cpu().numpy()
 
-# Participation ratios
-def participation_ratio(z):
-    cov = np.cov(z, rowvar=False)
-    evals, _ = np.linalg.eigh(cov)
-    evals = np.sort(evals)[::-1]
-    pr = (evals.sum() ** 2) / (np.square(evals).sum() + 1e-8)
-    return pr, evals
-print("Participation Ratio (raw):", participation_ratio(z)[0])
-print("Participation Ratio (spline):", participation_ratio(z_spline)[0])
 
-# Detrend
+plt.rcParams.update({
+    "font.family": "serif",          # or "Times New Roman"
+    "font.size": 11,
+    "axes.labelsize": 12,
+    "axes.titlesize": 12,
+    "legend.fontsize": 10,
+    "xtick.labelsize": 10,
+    "ytick.labelsize": 10,
+    "figure.dpi": 300,
+    "savefig.dpi": 300,
+    "axes.linewidth": 1.0,
+    "lines.linewidth": 1.5,
+})
+
+# Save original ED ES frames
+ed_frame = video[gt_ed]
+es_frame = video[gt_es]
+plt.imsave(os.path.join(out_dir, f"{idx}-ED.png"), (ed_frame/2 + 0.5).clip(0, 1))
+plt.imsave(os.path.join(out_dir, f"{idx}-ES.png"), (es_frame/2 + 0.5).clip(0, 1))
+
+# Save reconstructed ED ES frames
+recon_ed_frame = recon[gt_ed]
+recon_es_frame = recon[gt_es]
+plt.imsave(os.path.join(out_dir, f"{idx}-recon-ED.png"), (recon_ed_frame/2 + 0.5).clip(0, 1))
+plt.imsave(os.path.join(out_dir, f"{idx}-recon-ES.png"), (recon_es_frame/2 + 0.5).clip(0, 1))
+
+# Assign Phase and Processing
+EDES_global = np.load("tasks/EDES_axis.npy")
 z = detrend(z, axis=0, type='linear')
-z_spline = detrend(z_spline, axis=0, type='linear')
+phase = laplacian_phase(z)[0]
+# phase = phase / (np.max(phase)-np.min(phase)) * (2*np.pi+0.01) # Full colorbar
+z_proj = savgol_filter(project_to_major_axis(z, phase, axis=EDES_global), window_length=11, polyorder=3, axis=0)
+g1, g2 = find_peaks_sentinel(z_proj, p=0.2, d=5)
+peaks = np.concatenate([g1, g2])
 
-# phase, dgms = cohomology_circular_coords(
-#     z_spline,
-#     print_dgms_summary=True) 
-phase = laplacian_phase(z_spline)[0]
+# Plot 1D projection colored by phase
+# plt.scatter(timestamps, z_proj, c=phase, cmap='hsv', s=5)
+# cbar = plt.colorbar(label='Circular Coordinate Phase')
+# cbar.ax.set_yticks([-np.pi+0.07, 0, np.pi-0.07])    # Fuller colorbar
+# cbar.ax.set_yticklabels(['-π', '0', 'π'])
+# plt.xlabel('Time (s)')
+# plt.ylabel('Projection')
+# plt.axvline(x=timestamps[gt_ed], color='blue', linestyle='--', label='Ground Truth ED')
+# plt.axvline(x=timestamps[gt_es], color='green', linestyle='--', label='Ground Truth ES')
+# for p in peaks:
+#     plt.scatter(timestamps[p], z_proj[p], color='black', marker="x", s=120, zorder=3)
+# plt.legend()
+# plt.tight_layout()
+# plt.savefig(os.path.join(out_dir, f"{idx}-phase_color_1d.png"), dpi=300)
+# plt.clf()
+# plt.close()
 
-z_spline = z_spline[::dense_factor]
-phase = phase[::dense_factor]
-t_dense = t_dense[::dense_factor]
-
-z_proj = z @ find_phase_major_axis(z, phase)
-z_proj = detrend(z_proj, type='linear')
-group1 = find_peaks(z_proj, prominence=0.2*(np.max(z_proj)-np.min(z_proj)), distance=5)[0]
-group2 = find_peaks(-z_proj, prominence=0.2*(np.max(z_proj)-np.min(z_proj)), distance=5)[0]
-peaks = np.concatenate([group1, group2])
-print(peaks)
-
-plot_phase_major_axis(z, t_dense, phase, out_dir, idx, gt_ed=gt_ed, gt_es=gt_es, peaks=peaks)
 
 
+
+fig, ax = plt.subplots(figsize=(6, 3))
+sc = ax.scatter(timestamps, z_proj, c=phase, cmap='hsv', s=8, edgecolors='none')
+cbar = plt.colorbar(sc, ax=ax, pad=0.02, fraction=0.05)
+# cbar.set_label('Phase')
+cbar.set_ticks([-np.pi+0.05, 0, np.pi-0.05])
+cbar.set_ticklabels(['−π', '0', 'π'])
+ax.scatter(timestamps[gt_ed], z_proj[gt_ed], marker='x', s=100, linewidths=2.0, color='#C1121F', label='ED', zorder=5)
+ax.scatter(timestamps[gt_es], z_proj[gt_es], marker='x', s=100, linewidths=2.0, color='#0057B8', label='ES', zorder=5)
+ax.set_xlabel('Time (s)')
+# ax.set_ylabel('1D Projection')
+ax.spines['top'].set_visible(False)
+ax.spines['right'].set_visible(False)
+ax.grid(True, linestyle=':', linewidth=0.5, alpha=0.5)
+ax.legend(loc='upper right', frameon=False)
+fig.tight_layout()
+fig.savefig(os.path.join(out_dir, f"{idx}-phase_color_1d.png"),dpi=300)
+plt.close(fig)
+
+exit()
 grid, mu = von_mises_kernel_smoother(z, phase, n_grid=512, kappa=30)
 z_phase_plane, pp_basis = project_to_phase_plane(z, phase)
 plt.scatter(z_phase_plane[:, 0], z_phase_plane[:, 1], c=phase, cmap='hsv', s=5)

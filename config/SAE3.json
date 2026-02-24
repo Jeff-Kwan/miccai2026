@@ -3,9 +3,9 @@
         "epochs": 200,
         "batch_size": 32,
         "learning_rate": 1e-4,
-        "weight_decay": 1e-3,
+        "weight_decay": 1e-2,
         "max_frames": 64,
-        "reg": 0.01,
+        "reg": 0.001,
         "augmentations": true,
         "autocast": false,
         "compile": true,
@@ -17,6 +17,6 @@
         "out_dim": 3,
         "degree": 3,
         "n_ctrl_params": [0.1, 5],
-        "lam": 1.0
+        "lam": 10.0
     }
 }

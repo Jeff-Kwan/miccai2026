@@ -67,27 +67,26 @@ def EDES_via_Phase(z, gt_ed, gt_es):
     # z = detrend(z, axis=0, type='linear')
     # # phase = cohomology_circular_coords(z_spline, print_dgms_summary=False)[0]
     phase = laplacian_phase(z)[0]
-    # z_proj = z @ find_phase_major_axis(z, phase)
-    # z_proj = detrend(z_proj, type='linear')
     z_proj = savgol_filter(project_to_major_axis(z, phase, axis=EDES_axis), window_length=11, polyorder=3, axis=0)
-    peaks, valleys = find_peaks_sentinel(z_proj, p=0.2, d=5)
+    # ed_preds, es_preds = find_peaks_sentinel(z_proj, p=0.2, d=5)
 
-    # dz_norms = np.linalg.norm(savgol_filter(z, deriv=1, window_length=11, polyorder=3, axis=0), axis=-1)
-    # # peak_d = np.mean(dz_norms[peaks])
-    # # valley_d = np.mean(dz_norms[valleys])
-    # def prewindow_mean(x, idxs, k=5):
-    #     vals = []
-    #     for i in np.asarray(idxs, dtype=int):
-    #         start = max(0, i - k + 1)
-    #         end = i+1
-    #         vals.append(np.mean(x[start:end]))
-    #     return np.mean(vals)
-    # peak_d = prewindow_mean(dz_norms, peaks, k=5)
-    # valley_d = prewindow_mean(dz_norms, valleys, k=5)
-    # if peak_d < valley_d:
-    #     ed_preds = peaks; es_preds = valleys
-    # else:
-    #     ed_preds = valleys; es_preds = peaks
+    peaks, valleys = find_peaks_sentinel(z_proj, p=0.2, d=5)
+    dz_norms = np.linalg.norm(savgol_filter(z, deriv=1, window_length=11, polyorder=3, axis=0), axis=-1)
+    # peak_d = np.mean(dz_norms[peaks])
+    # valley_d = np.mean(dz_norms[valleys])
+    def prewindow_mean(x, idxs, k=5):
+        vals = []
+        for i in np.asarray(idxs, dtype=int):
+            start = max(0, i - k + 1)
+            end = i+1
+            vals.append(np.mean(x[start:end]))
+        return np.mean(vals)
+    peak_d = prewindow_mean(dz_norms, peaks, k=5)
+    valley_d = prewindow_mean(dz_norms, valleys, k=5)
+    if peak_d < valley_d:
+        ed_preds = peaks; es_preds = valleys
+    else:
+        ed_preds = valleys; es_preds = peaks
 
     # g1 = peaks if peaks[0] < valleys[0] else valleys
     # g2 = valleys if peaks[0] < valleys[0] else peaks
@@ -107,11 +106,14 @@ def EDES_via_Phase(z, gt_ed, gt_es):
     # ed_preds, es_preds = assign_ed_es_via_voting(z, phase, peaks, valleys)
 
     # group = np.concatenate([peaks, valleys])
-    ed_err = np.min(np.abs(peaks - gt_ed))
-    es_err = np.min(np.abs(valleys - gt_es))
-    # ed_err = np.min(np.abs(ed_preds - gt_ed))
-    # es_err = np.min(np.abs(es_preds - gt_es))
-    return ed_err, es_err
+    # ed_err = np.min(np.abs(group - gt_ed))
+    # es_err = np.min(np.abs(group - gt_es))
+    ed_err = np.min(np.abs(ed_preds - gt_ed))
+    es_err = np.min(np.abs(es_preds - gt_es))
+    assign = True
+    if (ed_err+es_err) > (np.min(np.abs(es_preds - gt_ed))+np.min(np.abs(ed_preds - gt_es))):
+        assign = False
+    return ed_err, es_err, assign
 
 
 def EDES_via_UMAP(z, gt_ed, gt_es):
@@ -166,7 +168,7 @@ def eval_split(dl, split_name: str, autocast: bool, detector_fn, max_workers=Non
             z_np = detrend(z_np, axis=0, type='linear')
 
             # Run detector inline
-            ed_err, es_err = detector_fn(z_np, gt_ed, gt_es)
+            ed_err, es_err, assign = detector_fn(z_np, gt_ed, gt_es)
             ed_mae_list.append(ed_err)
             es_mae_list.append(es_err)
             fps_all.append(fps)

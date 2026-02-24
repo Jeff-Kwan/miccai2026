@@ -36,7 +36,7 @@ autocast = config["training"].get("autocast", False)
 _, _, test_ds = load_echonet_dynamic_datasets()
 
 
-idx = 1053#random.randint(0, len(val_ds) - 1)
+idx = 20#random.randint(0, len(val_ds) - 1)
 video = test_ds[idx]['video'].to(device).unsqueeze(0)
 video = video * 2 - 1  # [0,1] → [-1,1]
 timestamps = test_ds[idx]['timestamps'].unsqueeze(0).to(device)

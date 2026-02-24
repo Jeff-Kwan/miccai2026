@@ -44,7 +44,7 @@ dl = DataLoader(
 )
 
 ### Run
-problems = {}; errors = []; ms_errors = []
+problems = {}; errors = []; ms_errors = []; assignments = []
 with torch.inference_mode():
     for i, batch in tqdm(enumerate(dl)):
         # if i < 80:
@@ -63,8 +63,11 @@ with torch.inference_mode():
         z = detrend(z, axis=0, type='linear')
 
         try:
-            ed_err, es_err = EDES_via_Phase(z, gt_ed, gt_es)
+            ed_err, es_err, assign = EDES_via_Phase(z, gt_ed, gt_es)
+            # if ed_err == 0 and es_err == 0:
+            #     print(f"Sample {i} has no errors: ED_err={ed_err}, ES_err={es_err}")
             errors.append([i, ed_err, es_err])
+            assignments.append(assign)
             if fps is not None:
                 ed_ms_err = ed_err * (1000.0 / fps)
                 es_ms_err = es_err * (1000.0 / fps)
@@ -85,6 +88,7 @@ print("\nSummary of problems encountered:")
 for error, indices in problems.items():
     print(f"Error: {error} - Occurred in samples: {indices}")
 
+print(f"Correct assignments: {sum(assignments) / len(assignments) * 100:.2f}%")
 print(f"ED Error MAE: {np.mean([e[1] for e in errors]):.2f} frames, STD: {np.std([e[1] for e in errors]):.2f} frames")
 print(f"ED Error Time: {np.mean([e[1] for e in ms_errors]):.2f} ms, STD: {np.std([e[1] for e in ms_errors]):.2f} ms")
 print(f"ES Error MAE: {np.mean([e[2] for e in errors]):.2f} frames, STD: {np.std([e[2] for e in errors]):.2f} frames")
