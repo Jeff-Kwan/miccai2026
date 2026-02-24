@@ -17,7 +17,9 @@ from sklearn.decomposition import PCA
 import umap
 from utils.find_extrema import compute_main_orientation_and_extrema
 from utils.topology import cohomology_circular_coords, laplacian_phase, find_phase_major_axis,\
-project_to_phase_plane, von_mises_kernel_smoother
+project_to_phase_plane, von_mises_kernel_smoother, project_to_major_axis
+
+EDES_axis = np.load("tasks/EDES_axis.npy")
 
 def find_peaks_sentinel(input_array, p, d):
     prominence = p * (np.max(input_array) - np.min(input_array))
@@ -62,11 +64,12 @@ def EDES_via_Norm(z, gt_ed, gt_es):
 
 
 def EDES_via_Phase(z, gt_ed, gt_es):
-    z = detrend(z, axis=0, type='linear')
-    # phase = cohomology_circular_coords(z_spline, print_dgms_summary=False)[0]
+    # z = detrend(z, axis=0, type='linear')
+    # # phase = cohomology_circular_coords(z_spline, print_dgms_summary=False)[0]
     phase = laplacian_phase(z)[0]
-    z_proj = z @ find_phase_major_axis(z, phase)
-    z_proj = detrend(z_proj, type='linear')
+    # z_proj = z @ find_phase_major_axis(z, phase)
+    # z_proj = detrend(z_proj, type='linear')
+    z_proj = savgol_filter(project_to_major_axis(z, phase, axis=EDES_axis), window_length=11, polyorder=3, axis=0)
     peaks, valleys = find_peaks_sentinel(z_proj, p=0.2, d=5)
 
     # dz_norms = np.linalg.norm(savgol_filter(z, deriv=1, window_length=11, polyorder=3, axis=0), axis=-1)
@@ -103,9 +106,9 @@ def EDES_via_Phase(z, gt_ed, gt_es):
 
     # ed_preds, es_preds = assign_ed_es_via_voting(z, phase, peaks, valleys)
 
-    group = np.concatenate([peaks, valleys])
-    ed_err = np.min(np.abs(group - gt_ed))
-    es_err = np.min(np.abs(group - gt_es))
+    # group = np.concatenate([peaks, valleys])
+    ed_err = np.min(np.abs(peaks - gt_ed))
+    es_err = np.min(np.abs(valleys - gt_es))
     # ed_err = np.min(np.abs(ed_preds - gt_ed))
     # es_err = np.min(np.abs(es_preds - gt_es))
     return ed_err, es_err
@@ -199,7 +202,7 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    load_dir = "results/2026_02_21/17_26_SAE"
+    load_dir = "results/2026_02_23/15_20_SAE"
 
     print("Starting ED/ES evaluation...")
 
@@ -232,7 +235,7 @@ if __name__ == "__main__":
     )
 
     # ---- Evaluation ----
-    detectors = [EDES_via_Norm]
+    detectors = [EDES_via_Phase]
     results = []
 
     for detector in detectors:

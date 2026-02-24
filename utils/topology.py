@@ -42,10 +42,9 @@ def robust_z(z):
     return fit_idx, hold_idx
 
 
-def preprocess_z(z):
-    z = detrend(z, axis=0, type='constant')
+def preprocess_to_tangent_space(z):
+    z = detrend(z, axis=0, type='linear')
     z = savgol_filter(z, deriv=1, window_length=11, polyorder=3, axis=0)
-    z = detrend(z, axis=0, type='constant')
     z = z / np.linalg.norm(z, axis=-1, keepdims=True)
     return z
 
@@ -56,23 +55,17 @@ def preprocess_z(z):
 def laplacian_phase(X: np.ndarray):
     """Spectral embedding to assign geometric phase"""
     # Unit Tangent Space
-    X = detrend(X, axis=0, type='linear')
-    X = savgol_filter(X, deriv=1, window_length=11, polyorder=3, axis=0)
-    X = X / np.linalg.norm(X, axis=-1, keepdims=True)
+    X = preprocess_to_tangent_space(X)
 
     spectral_embedding = SpectralEmbedding(
         n_components=2, 
         n_neighbors=15, 
         affinity='nearest_neighbors',
-        # affinity='rbf',
-        # gamma=0.5,
         n_jobs=-1)
     evecs = spectral_embedding.fit_transform(X)
 
-    # Light smoothing for better monotonicity & reduce noise sensitivity
-    a_s = gaussian_filter1d(evecs[:, 0], sigma=0.5, axis=0)
-    b_s = gaussian_filter1d(evecs[:, 1], sigma=0.5, axis=0)
-    theta = np.arctan2(b_s, a_s)
+    # Assign Phase
+    theta = np.arctan2(evecs[:, 1], evecs[:, 0])
 
     # Sign convention: enforce increasing phase over time
     if np.nanmean(np.diff(np.unwrap(theta))) < 0:
@@ -97,7 +90,7 @@ def laplacian_phase(X: np.ndarray):
 #         raise ValueError("n_eigs should be >= 4 for reliable pair selection")
 
 #     # # ---- preprocessing ----
-#     # X = preprocess_z(X)
+#     # X = preprocess_to_tangent_space(X)
 
 #     # # ---- kNN graph (directed) ----
 #     # dists, idx = NearestNeighbors(n_neighbors=k+1, metric='cosine').fit(X).kneighbors(X)
@@ -221,7 +214,7 @@ def cohomology_circular_coords(
         D_fit_hold = np.linalg.norm(z_fit[:, None, :] - z_hold[None, :, :], axis=-1)    # (N_fit, N_hold)
         D_rect = np.hstack([D_fit_fit, D_fit_hold])                                     # (N_fit, N_all)
     
-    # dz = preprocess_z(z)
+    # dz = preprocess_to_tangent_space(z)
     # D_rect2 = (2.0 - dz @ dz.T)**2
 
     # z = detrend(z, axis=0, type='linear')
@@ -250,7 +243,7 @@ def cohomology_circular_coords(
 
 
 def project_to_phase_plane(z: np.ndarray, phase: np.ndarray):
-    z = preprocess_z(z)
+    z = preprocess_to_tangent_space(z)
     pls = PLSRegression(n_components=2)
     pls.fit(np.column_stack([np.cos(phase), np.sin(phase)]), z)
     C = pls.coef_  # mapping from X (2) -> z (D): shape usually (2, D)
@@ -268,7 +261,7 @@ def project_to_phase_plane(z: np.ndarray, phase: np.ndarray):
 
 
 def find_phase_major_axis(z: np.ndarray, phase: np.ndarray):
-    z = preprocess_z(z)
+    z = preprocess_to_tangent_space(z)
     pls = PLSRegression(n_components=2)
     pls.fit(np.column_stack([np.cos(phase), np.sin(phase)]), z)
     C = pls.coef_
@@ -278,6 +271,18 @@ def find_phase_major_axis(z: np.ndarray, phase: np.ndarray):
     u0 = U[:, 0]     # major-axis direction (unit)
     u0 = u0 * np.sign(u0[0])  # fix sign ambiguity
     return u0
+
+def project_to_major_axis(z: np.ndarray, phase: np.ndarray, axis: np.ndarray = None):
+    dz = preprocess_to_tangent_space(z)
+    pls = PLSRegression(n_components=2)
+    pls.fit(np.column_stack([np.cos(phase), np.sin(phase)]), dz)
+    U, _, _ = np.linalg.svd(pls.coef_, full_matrices=False)
+    u0 = U[:, 0]
+    if axis is not None:
+        if u0 @ axis < 0:
+            u0 = -u0
+    z_proj = z @ u0
+    return z_proj.ravel()
 
 
 
