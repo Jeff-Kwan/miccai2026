@@ -71,32 +71,37 @@ def speed_profile_assignment(z, peaks, valleys):
     dz = savgol_filter(z, window_length=11, polyorder=3, deriv=1, axis=0)
     speed = np.linalg.norm(dz, axis=-1)
 
-    def count_seg(a, b):
+    def mean_seg(a, b):
+        # mirror your old "too short => ignore" behavior
         if b - a < 5:
-            return 0
-        s = speed[a:b]
-        pk, _ = find_peaks(s, prominence=0.3 * (s.max() - s.min()),
-                           distance=5)
-        return int(pk.size)
+            return 0.0
+        return float(speed[a:b].mean())
 
     pset, vset = set(peaks.tolist()), set(valleys.tolist())
-    pset -= (pset & vset)
-    vset -= (pset & vset)
+    overlap = pset & vset
+    pset -= overlap
+    vset -= overlap
 
-    events = sorted([(i, 0) for i in pset if 0 <= i < n] + [(i, 1) for i in vset if 0 <= i < n])
+    events = sorted(
+        [(i, 0) for i in pset if 0 <= i < n] +
+        [(i, 1) for i in vset if 0 <= i < n]
+    )
     if len(events) < 2:
         return peaks, valleys
 
-    p2v = v2p = 0
+    p2v_vals = []
+    v2p_vals = []
     for (i0, t0), (i1, t1) in zip(events[:-1], events[1:]):
+        m = mean_seg(i0, i1)
         if t0 == 0 and t1 == 1:
-            p2v += count_seg(i0, i1)
+            p2v_vals.append(m)
         elif t0 == 1 and t1 == 0:
-            v2p += count_seg(i0, i1)
+            v2p_vals.append(m)
 
-    return (valleys, peaks) if p2v > v2p else (peaks, valleys)
+    p2v = np.mean(p2v_vals) if p2v_vals else 0.0
+    v2p = np.mean(v2p_vals) if v2p_vals else 0.0
 
-# def phase_density_assignment(z, phase, peaks, valleys):
+    return (valleys, peaks) if p2v < v2p else (peaks, valleys)
 
 
 def _worker(args):
@@ -111,13 +116,13 @@ def _worker(args):
     z_proj = savgol_filter(project_to_major_axis(z, phase, axis=EDES_axis), window_length=11, polyorder=3, axis=0)
     peaks, valleys = find_peaks_sentinel(z_proj, p=0.3, d=5)
 
-    ed_preds, es_preds = global_axis(peaks, valleys)
+    # ed_preds, es_preds = global_axis(peaks, valleys)
     # ed_preds, es_preds = time_interval_assignment(peaks, valleys)
     # ed_preds, es_preds = prewindow_velocity_assignment(z,  peaks, valleys)
     # ed_preds, es_preds = acceleration_assignment(z, peaks, valleys)
     # ed_preds, es_preds = phase_acceleration_assignment(phase, peaks, valleys)
     # ed_preds, es_preds = voting_assignment(z, phase, peaks, valleys)
-    # ed_preds, es_preds = speed_profile_assignment(z, peaks, valleys)
+    ed_preds, es_preds = speed_profile_assignment(z, peaks, valleys)
 
     ed_err = np.min(np.abs(ed_preds - gt_ed))
     es_err = np.min(np.abs(es_preds - gt_es))

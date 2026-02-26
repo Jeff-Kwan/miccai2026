@@ -9,10 +9,14 @@ from utils.topology import laplacian_phase
 import os
 from tqdm import tqdm
 import json
+import shutil
 
 
 def run_split(dl, split_name: str, autocast: bool):
     out_dir = f"/data/echodyna/latents/{split_name}"
+    if os.path.exists(out_dir):
+        shutil.rmtree(out_dir)
+        print(f"Overwriting output directory {out_dir}...")
     os.makedirs(out_dir, exist_ok=True)
     with torch.inference_mode():
         for idx, batch in tqdm(enumerate(dl), desc=split_name):
@@ -94,6 +98,6 @@ if __name__ == "__main__":
     )
 
     # ---- Evaluation ----
-    dls = [train_dl, val_dl, test_dl]
-    for dl, split_name in zip(dls, ["Train", "Val", "Test"]):
+    dls = [test_dl]
+    for dl, split_name in zip(dls, ["Test"]):
         run_split(dl, split_name, autocast)

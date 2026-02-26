@@ -1,35 +1,27 @@
-import torch
 from tqdm import tqdm
 import numpy as np
 from matplotlib import pyplot as plt
 from Dataset import get_latents_dataset
-from scipy.signal import detrend
-from sklearn.decomposition import PCA
 
 train_ds, val_ds, test_ds = get_latents_dataset()
 
 
-phase_diff_list = []
-for sample in tqdm(val_ds):
+monotonicity_scores = []
+for sample in tqdm(test_ds):
     phase = sample["phase"]  # [T]
-    gt_ed, gt_es = sample["frame_indices"]
-    phase_diff_list.append(((phase[gt_es] - phase[gt_ed])) / (np.pi))
+    dphase = np.diff(np.unwrap(phase))
+    dphase_direction = dphase >= 0
+    score = np.mean(dphase_direction)
+    monotonicity_scores.append(score)
 
-phase_diff_array = np.abs(np.stack(phase_diff_list))  # [N]
+print(f"Mean monotonicity score: {np.mean(monotonicity_scores):.3f} ± {np.std(monotonicity_scores):.3f}")
+print(f"Max score: {np.max(monotonicity_scores):.3f}, Min score: {np.min(monotonicity_scores):.3f}")
+print(f"Percentage of samples with score > 0.9: {np.mean(np.array(monotonicity_scores) > 0.9) * 100:.2f}%")
 
-# Min, max, median, mean, std of phase diff
-print("ABS Phase diff stats:")
-print(f"Min: {phase_diff_array.min():.4f}")
-print(f"Max: {phase_diff_array.max():.4f}")
-print(f"Median: {np.median(phase_diff_array):.4f}")
-print(f"Mean: {phase_diff_array.mean():.4f}")
-print(f"Std: {phase_diff_array.std():.4f}")
-
-# Histogram of phase differences
-plt.figure(figsize=(8, 6))
-plt.hist(phase_diff_array, bins=20, density=True, alpha=0.7)
-plt.title("Histogram of ABS Phase Differences (normalized by pi)")
-plt.xlabel("ABS Phase Difference / pi")
-plt.ylabel("Density")
-plt.grid()
-plt.savefig("phase_diff_histogram.png")
+# plot histogram
+plt.hist(monotonicity_scores, bins=20, edgecolor='black')
+plt.title("Histogram of Phase Monotonicity Scores")
+plt.xlabel("Monotonicity Score")
+plt.ylabel("Frequency")
+plt.grid(axis='y', alpha=0.75)
+plt.savefig("phase_monotonicity_histogram.png")
