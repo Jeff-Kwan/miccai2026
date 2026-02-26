@@ -53,7 +53,6 @@ with torch.inference_mode():
         gt_ed = int(es[0])
 
         videos = videos.to(device, non_blocking=True)
-        timestamps = timestamps.to(device, non_blocking=True)
 
         with torch.autocast('cuda', torch.bfloat16, enabled=autocast):
             z = model.encode(videos)
