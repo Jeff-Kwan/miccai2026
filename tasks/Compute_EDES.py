@@ -68,25 +68,26 @@ def EDES_via_Phase(z, gt_ed, gt_es):
     # # phase = cohomology_circular_coords(z_spline, print_dgms_summary=False)[0]
     phase = laplacian_phase(z)[0]
     z_proj = savgol_filter(project_to_major_axis(z, phase, axis=EDES_axis), window_length=11, polyorder=3, axis=0)
-    # ed_preds, es_preds = find_peaks_sentinel(z_proj, p=0.3, d=5)
-
     peaks, valleys = find_peaks_sentinel(z_proj, p=0.3, d=5)
-    dz_norms = np.linalg.norm(savgol_filter(z, deriv=1, window_length=11, polyorder=3, axis=0), axis=-1)
+    ed_preds = peaks; es_preds = valleys
+
+    
+    # dz_norms = np.linalg.norm(savgol_filter(z, deriv=1, window_length=11, polyorder=3, axis=0), axis=-1)
     # peak_d = np.mean(dz_norms[peaks])
     # valley_d = np.mean(dz_norms[valleys])
-    def prewindow_mean(x, idxs, k=5):
-        vals = []
-        for i in np.asarray(idxs, dtype=int):
-            start = max(0, i - k + 1)
-            end = i+1
-            vals.append(np.mean(x[start:end]))
-        return np.mean(vals)
-    peak_d = prewindow_mean(dz_norms, peaks, k=5)
-    valley_d = prewindow_mean(dz_norms, valleys, k=5)
-    if peak_d < valley_d:
-        ed_preds = peaks; es_preds = valleys
-    else:
-        ed_preds = valleys; es_preds = peaks
+    # def prewindow_mean(x, idxs, k=5):
+    #     vals = []
+    #     for i in np.asarray(idxs, dtype=int):
+    #         start = max(0, i - k + 1)
+    #         end = i+1
+    #         vals.append(np.mean(x[start:end]))
+    #     return np.mean(vals)
+    # peak_d = prewindow_mean(dz_norms, peaks, k=5)
+    # valley_d = prewindow_mean(dz_norms, valleys, k=5)
+    # if peak_d < valley_d:
+    #     ed_preds = peaks; es_preds = valleys
+    # else:
+    #     ed_preds = valleys; es_preds = peaks
 
     # g1 = peaks if peaks[0] < valleys[0] else valleys
     # g2 = valleys if peaks[0] < valleys[0] else peaks
@@ -105,14 +106,14 @@ def EDES_via_Phase(z, gt_ed, gt_es):
 
     # ed_preds, es_preds = assign_ed_es_via_voting(z, phase, peaks, valleys)
 
-    group = np.concatenate([peaks, valleys]); assign=True
-    ed_err = min(np.min(np.abs(peaks - gt_ed)), np.min(np.abs(valleys - gt_ed)))
-    es_err = min(np.min(np.abs(valleys - gt_es)), np.min(np.abs(peaks - gt_es)))
-    # ed_err = np.min(np.abs(ed_preds - gt_ed))
-    # es_err = np.min(np.abs(es_preds - gt_es))
-    # assign = True
-    # assign = (ed_err+es_err) <= (np.min(np.abs(es_preds-gt_ed))+np.min(np.abs(ed_preds-gt_es)))
-    return ed_err, es_err, assign
+    min_error = [
+        min(np.min(np.abs(peaks - gt_ed)), np.min(np.abs(valleys - gt_ed))),
+        min(np.min(np.abs(valleys - gt_es)), np.min(np.abs(peaks - gt_es)))
+    ]
+    ed_err = np.min(np.abs(ed_preds - gt_ed))
+    es_err = np.min(np.abs(es_preds - gt_es))
+    assign = (ed_err+es_err) <= (np.min(np.abs(es_preds-gt_ed))+np.min(np.abs(ed_preds-gt_es)))
+    return ed_err, es_err, assign, min_error
 
 
 def EDES_via_UMAP(z, gt_ed, gt_es):

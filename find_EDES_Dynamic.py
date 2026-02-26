@@ -44,11 +44,9 @@ dl = DataLoader(
 )
 
 ### Run
-problems = {}; errors = []; ms_errors = []; assignments = []
+problems = {}; errors = []; ms_errors = []; assignments = []; min_err_list = []
 with torch.inference_mode():
     for i, batch in tqdm(enumerate(dl)):
-        # if i < 80:
-        #     continue
         videos, timestamps, fps, ed, es = batch
         fps = float(fps[0])
         gt_es = int(ed[0])
@@ -63,16 +61,17 @@ with torch.inference_mode():
         z = detrend(z, axis=0, type='linear')
 
         try:
-            ed_err, es_err, assign = EDES_via_Phase(z, gt_ed, gt_es)
-            if ed_err == 0 and es_err == 0:
-                print(f"Sample {i} has no errors: ED_err={ed_err}, ES_err={es_err}")
+            ed_err, es_err, assign, min_err = EDES_via_Phase(z, gt_ed, gt_es)
+            # if ed_err == 0 and es_err == 0:
+            #     print(f"Sample {i} has no errors: ED_err={ed_err}, ES_err={es_err}")
             errors.append([i, ed_err, es_err])
             assignments.append(assign)
+            min_err_list += min_err
             if fps is not None:
                 ed_ms_err = ed_err * (1000.0 / fps)
                 es_ms_err = es_err * (1000.0 / fps)
                 ms_errors.append([i, ed_ms_err, es_ms_err])
-            # print(f"Sample index {i}: ED error = {ed_err:.2f} frames, ES error = {es_err:.2f} frames")
+            # print(f"Sample index {i}: ED error = {ed_err:.3f} frames, ES error = {es_err:.3f} frames")
             # exit()
         except Exception as e:
             print("!!!!!")
@@ -88,18 +87,19 @@ print("\nSummary of problems encountered:")
 for error, indices in problems.items():
     print(f"Error: {error} - Occurred in samples: {indices}")
 
-print(f"Correct assignments: {sum(assignments) / len(assignments) * 100:.2f}%")
-print(f"ED Error MAE: {np.mean([e[1] for e in errors]):.2f} frames, STD: {np.std([e[1] for e in errors]):.2f} frames")
-print(f"ED Error Time: {np.mean([e[1] for e in ms_errors]):.2f} ms, STD: {np.std([e[1] for e in ms_errors]):.2f} ms")
-print(f"ES Error MAE: {np.mean([e[2] for e in errors]):.2f} frames, STD: {np.std([e[2] for e in errors]):.2f} frames")
-print(f"ES Error Time: {np.mean([e[2] for e in ms_errors]):.2f} ms, STD: {np.std([e[2] for e in ms_errors]):.2f} ms")
+print(f"Localization error = {np.mean(min_err_list):.3f} frames, STD: {np.std(min_err_list):.3f} frames")
+print(f"Correct assignments: {sum(assignments) / len(assignments) * 100:.3f}%")
+print(f"ED Error MAE: {np.mean([e[1] for e in errors]):.3f} frames, STD: {np.std([e[1] for e in errors]):.3f} frames")
+print(f"ED Error Time: {np.mean([e[1] for e in ms_errors]):.3f} ms, STD: {np.std([e[1] for e in ms_errors]):.3f} ms")
+print(f"ES Error MAE: {np.mean([e[2] for e in errors]):.3f} frames, STD: {np.std([e[2] for e in errors]):.3f} frames")
+print(f"ES Error Time: {np.mean([e[2] for e in ms_errors]):.3f} ms, STD: {np.std([e[2] for e in ms_errors]):.3f} ms")
 # print indices & errors of first 3 largest errors
-errors = np.array(errors)
-largest_errors = errors[np.argsort(errors[:, 1])[::-1][:3]]
-print("\nLargest ED errors:")
-for idx, ed_err, es_err in largest_errors:
-    print(f"Sample index {idx}: ED error = {ed_err:.2f} frames, ES error = {es_err:.2f} frames")
-largest_errors = errors[np.argsort(errors[:, 2])[::-1][:3]]
-print("\nLargest ES errors:")
-for idx, ed_err, es_err in largest_errors:
-    print(f"Sample index {idx}: ED error = {ed_err:.2f} frames, ES error = {es_err:.2f} frames")
+# errors = np.array(errors)
+# largest_errors = errors[np.argsort(errors[:, 1])[::-1][:3]]
+# print("\nLargest ED errors:")
+# for idx, ed_err, es_err in largest_errors:
+#     print(f"Sample index {idx}: ED error = {ed_err:.3f} frames, ES error = {es_err:.3f} frames")
+# largest_errors = errors[np.argsort(errors[:, 2])[::-1][:3]]
+# print("\nLargest ES errors:")
+# for idx, ed_err, es_err in largest_errors:
+#     print(f"Sample index {idx}: ED error = {ed_err:.3f} frames, ES error = {es_err:.3f} frames")
