@@ -12,11 +12,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 from scipy.signal import detrend, savgol_filter
-from utils.topology import laplacian_phase, project_to_major_axis, von_mises_kernel_smoother
+from sklearn.manifold import SpectralEmbedding
+from utils.topology import laplacian_phase, project_to_major_axis, von_mises_kernel_smoother, project_to_phase_plane
 from tasks.Compute_EDES import find_peaks_sentinel
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_23/15_20_SAE"
+load_dir = "results/2026_02_24/14_57_SAE"
 out_dir = os.path.join(load_dir, "sample")
 os.makedirs(out_dir, exist_ok=True)
 
@@ -49,14 +50,15 @@ recon = recon.squeeze().permute(0, 2, 3, 1).cpu().numpy()
 video = video.squeeze().permute(0, 2, 3, 1).cpu().numpy()
 
 
+
 plt.rcParams.update({
     "font.family": "serif",          # or "Times New Roman"
     "font.size": 11,
     "axes.labelsize": 12,
     "axes.titlesize": 12,
     "legend.fontsize": 10,
-    "xtick.labelsize": 10,
-    "ytick.labelsize": 10,
+    "xtick.labelsize": 12,
+    "ytick.labelsize": 12,
     "figure.dpi": 300,
     "savefig.dpi": 300,
     "axes.linewidth": 1.0,
@@ -84,92 +86,90 @@ z_proj = savgol_filter(project_to_major_axis(z, phase, axis=EDES_global), window
 g1, g2 = find_peaks_sentinel(z_proj, p=0.2, d=5)
 peaks = np.concatenate([g1, g2])
 
-# Plot 1D projection colored by phase
-# plt.scatter(timestamps, z_proj, c=phase, cmap='hsv', s=5)
-# cbar = plt.colorbar(label='Circular Coordinate Phase')
-# cbar.ax.set_yticks([-np.pi+0.07, 0, np.pi-0.07])    # Fuller colorbar
-# cbar.ax.set_yticklabels(['-π', '0', 'π'])
-# plt.xlabel('Time (s)')
-# plt.ylabel('Projection')
-# plt.axvline(x=timestamps[gt_ed], color='blue', linestyle='--', label='Ground Truth ED')
-# plt.axvline(x=timestamps[gt_es], color='green', linestyle='--', label='Ground Truth ES')
-# for p in peaks:
-#     plt.scatter(timestamps[p], z_proj[p], color='black', marker="x", s=120, zorder=3)
-# plt.legend()
-# plt.tight_layout()
-# plt.savefig(os.path.join(out_dir, f"{idx}-phase_color_1d.png"), dpi=300)
-# plt.clf()
-# plt.close()
-
-
-
 
 fig, ax = plt.subplots(figsize=(6, 3))
-sc = ax.scatter(timestamps, z_proj, c=phase, cmap='hsv', s=8, edgecolors='none')
+sc = ax.scatter(timestamps, z_proj, c=phase, cmap='hsv', s=8)
 cbar = plt.colorbar(sc, ax=ax, pad=0.02, fraction=0.05)
-# cbar.set_label('Phase')
 cbar.set_ticks([-np.pi+0.05, 0, np.pi-0.05])
 cbar.set_ticklabels(['−π', '0', 'π'])
 ax.scatter(timestamps[gt_ed], z_proj[gt_ed], marker='x', s=100, linewidths=2.0, color='#C1121F', label='ED', zorder=5)
 ax.scatter(timestamps[gt_es], z_proj[gt_es], marker='x', s=100, linewidths=2.0, color='#0057B8', label='ES', zorder=5)
 ax.set_xlabel('Time (s)')
-# ax.set_ylabel('1D Projection')
 ax.spines['top'].set_visible(False)
 ax.spines['right'].set_visible(False)
-ax.grid(True, linestyle=':', linewidth=0.5, alpha=0.5)
+# ax.grid(True, linestyle=':', linewidth=0.5, alpha=0.5)
 ax.legend(loc='upper right', frameon=False)
-fig.tight_layout()
-fig.savefig(os.path.join(out_dir, f"{idx}-phase_color_1d.png"),dpi=300)
-plt.close(fig)
-
-exit()
-grid, mu = von_mises_kernel_smoother(z, phase, n_grid=512, kappa=30)
-z_phase_plane, pp_basis = project_to_phase_plane(z, phase)
-plt.scatter(z_phase_plane[:, 0], z_phase_plane[:, 1], c=phase, cmap='hsv', s=5)
-plt.scatter(z_phase_plane[gt_ed, 0], z_phase_plane[gt_ed, 1], c='red', s=50, label='ED frame')
-plt.scatter(z_phase_plane[gt_es, 0], z_phase_plane[gt_es, 1], c='blue', s=50, label='ES frame')
-plt.colorbar(label='Phase')
-plt.title(f"Processed Z on Phase Plane")
-plt.xlabel("Phase Plane X")
-plt.ylabel("Phase Plane Y")
-plt.savefig(os.path.join(out_dir, f"{idx}-phase_plane-Processed.png"), dpi=200)
+plt.tight_layout()
+plt.savefig(os.path.join(out_dir, f"{idx}-phase_color_1d.png"),dpi=300)
+plt.clf()
 plt.close()
 
-z_phase_plane = z @ pp_basis
-mu_plane = mu @ pp_basis
-plt.scatter(z_phase_plane[:, 0], z_phase_plane[:, 1], c=phase, cmap='hsv', s=5)
-plt.plot(mu_plane[:, 0], mu_plane[:, 1], c='black', linewidth=2, label='Smoothed Trajectory')
-plt.scatter(z_phase_plane[gt_ed, 0], z_phase_plane[gt_ed, 1], c='red', marker='x', s=50, label='ED frame')
-plt.scatter(z_phase_plane[gt_es, 0], z_phase_plane[gt_es, 1], c='blue', marker='x', s=50, label='ES frame')
-plt.colorbar(label='Phase')
-plt.title(f"Actual Z on Phase Plane")
-plt.xlabel("Phase Plane X")
-plt.ylabel("Phase Plane Y")
-plt.savefig(os.path.join(out_dir, f"{idx}-phase_plane-Actual.png"), dpi=200)
-plt.close()
 
-# PCA for plotting
 pca = PCA(n_components=3)
 z_3d = pca.fit_transform(z)
-mu_3d = pca.transform(mu)
-
-# plot_phase_and_z(z_3d, phase, out_dir, idx, dim="2d", gt_ed=gt_ed, gt_es=gt_es, mu=mu_3d)
-plot_phase_and_z(z_3d, phase, out_dir, idx, dim="3d", gt_ed=gt_ed, gt_es=gt_es, mu=mu_3d)
-plot_phase_and_time(phase, t_dense, out_dir, idx, sine=False, gt_ed=gt_ed, gt_es=gt_es, differentiate=0)
-# plot_phase_and_time(phase, t_dense, out_dir, idx, gt_ed=gt_ed, gt_es=gt_es, differentiate=1)
-# plot_znorm_and_time(mu, t_dense, out_dir, idx, frames_idx=frames_idx)
-
-ed_phase = phase[gt_ed]; es_phase = phase[gt_es]
-# nearest neighbor grid idx for each event
-ed_grid_idx = np.argmin(np.abs(grid - ed_phase))
-es_grid_idx = np.argmin(np.abs(grid - es_phase))
-mu_norm = np.linalg.norm(mu, axis=-1)
-plt.scatter(grid, mu_norm, color='black', s=10)
-plt.scatter(grid[ed_grid_idx], mu_norm[ed_grid_idx], color='red', s=50, label='ED')
-plt.scatter(grid[es_grid_idx], mu_norm[es_grid_idx], color='blue', s=50, label='ES')
-plt.title("Smoothed Trajectory Norm vs Phase")
-plt.xlabel("Phase")
-plt.ylabel("Norm of Smoothed Trajectory")
-plt.legend()
-plt.savefig(os.path.join(out_dir, f"{idx}-mu_norm_vs_phase.png"), dpi=200)
+fig = plt.figure(figsize=(6,6))
+ax = fig.add_subplot(111, projection='3d')
+ax.scatter(z_3d[:,0], z_3d[:,1], z_3d[:,2], c=phase, cmap='hsv', s=10, depthshade=False)
+ax.scatter(z_3d[gt_ed,0], z_3d[gt_ed,1], z_3d[gt_ed,2], marker='x', s=200, linewidths=3, color='#C1121F', label='ED', depthshade=False)
+ax.scatter(z_3d[gt_es,0], z_3d[gt_es,1], z_3d[gt_es,2], marker='x', s=200, linewidths=3, color='#0057B8', label='ES', depthshade=False)
+ax.legend(loc='upper right', frameon=False)
+# ax.grid(True, linestyle=':', linewidth=0.5, alpha=0.5)
+plt.savefig(os.path.join(out_dir, f"{idx}-latent_3d.png"), dpi=300)
+plt.clf()
 plt.close()
+
+
+
+
+grid, mu = von_mises_kernel_smoother(z, phase, kappa=20, n_grid=256)
+mu_3d = pca.transform(mu)
+dmu_3d = savgol_filter(mu_3d, deriv=1, window_length=11, polyorder=3, axis=0)
+dmu_norm = dmu_3d / (np.linalg.norm(dmu_3d, axis=1, keepdims=True) + 1e-8)
+step = 10
+idxs = np.arange(0, len(mu_3d), step)
+fig = plt.figure(figsize=(6, 6))
+ax = fig.add_subplot(111, projection='3d')
+ax.plot(z_3d[:,0], z_3d[:,1], z_3d[:,2], color='gray', linewidth=1.0, alpha=0.6)
+ax.quiver(mu_3d[idxs,0], mu_3d[idxs,1], mu_3d[idxs,2], dmu_3d[idxs,0], dmu_3d[idxs,1], dmu_3d[idxs,2], length=0.05, normalize=True, color='orange', linewidth=2.0, arrow_length_ratio=0.6)
+# ax.scatter(z_3d[gt_ed,0], z_3d[gt_ed,1], z_3d[gt_ed,2], marker='x', s=200, linewidths=3, color='#C1121F', label='ED', depthshade=False)
+# ax.scatter(z_3d[gt_es,0], z_3d[gt_es,1], z_3d[gt_es,2], marker='x', s=200, linewidths=3, color='#0057B8', label='ES', depthshade=False)
+# ax.legend(frameon=False)
+# ax.grid(True, linestyle=':', linewidth=0.5, alpha=0.5)
+plt.savefig(os.path.join(out_dir, f"{idx}-direction_flow_3d.png"), dpi=300)
+plt.clf()
+plt.close()
+
+
+dz = savgol_filter(z, deriv=1, window_length=11, polyorder=3, axis=0)
+dz = dz / np.linalg.norm(dz, axis=1, keepdims=True)
+spectral_embedding = SpectralEmbedding(
+        n_components=10, 
+        n_neighbors=15, 
+        affinity='nearest_neighbors',
+        n_jobs=-1)
+evecs = spectral_embedding.fit_transform(dz)
+fig, ax = plt.subplots(figsize=(4, 4))
+ax.scatter(evecs[:,0], evecs[:,1], c=phase, cmap='hsv', s=10)
+plt.tight_layout()
+plt.savefig(os.path.join(out_dir, f"{idx}-spectral_embedding.png"), dpi=300)
+plt.clf()
+plt.close()
+
+# plot spectrum?
+from scipy.sparse.csgraph import laplacian as csgraph_laplacian
+from scipy.sparse.linalg import eigsh
+W = spectral_embedding.affinity_matrix_   # kNN graph (sparse)
+L = csgraph_laplacian(W, normed=True)
+# How many eigenvalues to look at (more than n_components is useful)
+m = min(30, L.shape[0] - 2)  # don't ask for >= N eigenpairs
+evals, _ = eigsh(L, k=m, which="SM")      # smallest magnitude eigenvalues
+evals = np.sort(np.real(evals))
+fig, ax = plt.subplots(figsize=(4, 4))
+ax.plot(np.arange(1, len(evals)+1), evals, marker="o", linewidth=1)
+# ax.set_xlabel("Eigenvalue index")
+# ax.set_ylabel("Eigenvalue")
+# ax.set_title("Graph Laplacian Spectrum")
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig(os.path.join(out_dir, f"{idx}-laplacian_spectrum.png"), dpi=300)
+plt.close(fig)

@@ -51,12 +51,12 @@ def EDES_via_Norm(z, gt_ed, gt_es):
     phase = laplacian_phase(z)[0]
     grid, mu = von_mises_kernel_smoother(z, phase, n_grid=512, kappa=1)
     mu = np.linalg.norm(mu, axis=1)
-    peaks, _ = find_peaks_sentinel(mu, p=0.2, d=5)
+    peaks, _ = find_peaks_sentinel(mu, p=0.3, d=5)
     pred_phases = grid[peaks]
     delta1 = np.abs(phase - pred_phases[0])
     delta2 = np.abs(phase - pred_phases[1])
-    _, valleys1 = find_peaks_sentinel(delta1, p=0.2, d=5)
-    _, valleys2 = find_peaks_sentinel(delta2, p=0.2, d=5)
+    _, valleys1 = find_peaks_sentinel(delta1, p=0.3, d=5)
+    _, valleys2 = find_peaks_sentinel(delta2, p=0.3, d=5)
     group = np.concatenate([valleys1, valleys2])
     ed_err = np.min(np.abs(group - gt_ed))
     es_err = np.min(np.abs(group - gt_es))
@@ -68,9 +68,9 @@ def EDES_via_Phase(z, gt_ed, gt_es):
     # # phase = cohomology_circular_coords(z_spline, print_dgms_summary=False)[0]
     phase = laplacian_phase(z)[0]
     z_proj = savgol_filter(project_to_major_axis(z, phase, axis=EDES_axis), window_length=11, polyorder=3, axis=0)
-    # ed_preds, es_preds = find_peaks_sentinel(z_proj, p=0.2, d=5)
+    # ed_preds, es_preds = find_peaks_sentinel(z_proj, p=0.3, d=5)
 
-    peaks, valleys = find_peaks_sentinel(z_proj, p=0.2, d=5)
+    peaks, valleys = find_peaks_sentinel(z_proj, p=0.3, d=5)
     dz_norms = np.linalg.norm(savgol_filter(z, deriv=1, window_length=11, polyorder=3, axis=0), axis=-1)
     # peak_d = np.mean(dz_norms[peaks])
     # valley_d = np.mean(dz_norms[valleys])
@@ -105,14 +105,13 @@ def EDES_via_Phase(z, gt_ed, gt_es):
 
     # ed_preds, es_preds = assign_ed_es_via_voting(z, phase, peaks, valleys)
 
-    # group = np.concatenate([peaks, valleys])
-    # ed_err = np.min(np.abs(group - gt_ed))
-    # es_err = np.min(np.abs(group - gt_es))
-    ed_err = np.min(np.abs(ed_preds - gt_ed))
-    es_err = np.min(np.abs(es_preds - gt_es))
-    assign = True
-    if (ed_err+es_err) > (np.min(np.abs(es_preds - gt_ed))+np.min(np.abs(ed_preds - gt_es))):
-        assign = False
+    group = np.concatenate([peaks, valleys]); assign=True
+    ed_err = min(np.min(np.abs(peaks - gt_ed)), np.min(np.abs(valleys - gt_ed)))
+    es_err = min(np.min(np.abs(valleys - gt_es)), np.min(np.abs(peaks - gt_es)))
+    # ed_err = np.min(np.abs(ed_preds - gt_ed))
+    # es_err = np.min(np.abs(es_preds - gt_es))
+    # assign = True
+    # assign = (ed_err+es_err) <= (np.min(np.abs(es_preds-gt_ed))+np.min(np.abs(ed_preds-gt_es)))
     return ed_err, es_err, assign
 
 

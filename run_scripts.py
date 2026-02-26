@@ -23,3 +23,9 @@ subprocess.run(
     cwd="/workspace/miccai2026",
     check=True
 )
+
+subprocess.run(
+    ["torchrun", "--nproc_per_node=4", "EchoDynaDDP4.py"],
+    cwd="/workspace/miccai2026",
+    check=True
+)

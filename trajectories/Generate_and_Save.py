@@ -5,8 +5,8 @@ from torch.utils.data import DataLoader
 from datahandling.EchoDynaDatasetShard import load_echonet_dynamic_datasets
 from datahandling.collate import Traj_collate
 from models.SplineAutoEncoder import SplineAutoEncoder
+from utils.topology import laplacian_phase
 import os
-import numpy as np
 from tqdm import tqdm
 import json
 
@@ -14,7 +14,6 @@ import json
 def run_split(dl, split_name: str, autocast: bool):
     out_dir = f"/data/echodyna/latents/{split_name}"
     os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, f"{idx:04d}.pt")
     with torch.inference_mode():
         for idx, batch in tqdm(enumerate(dl), desc=split_name):
             video = batch["video"].unsqueeze(0).to(device, non_blocking=True)  # [1,T,C,H,W]
@@ -28,14 +27,17 @@ def run_split(dl, split_name: str, autocast: bool):
 
             # Move to CPU numpy
             z_np = z.squeeze(0).cpu().numpy()
+            phase = laplacian_phase(z_np)[0]
 
             traj_data = {
                 "z": z_np,
+                "phase": phase,
                 "ED": gt_ed,
                 "ES": gt_es,
                 "fps": fps,
                 "metadata": metadata,
             }
+            out_path = os.path.join(out_dir, f"{idx:04d}.pt")
             torch.save(traj_data, out_path)
 
 
@@ -43,7 +45,7 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    load_dir = "results/2026_02_23/15_20_SAE"
+    load_dir = "results/2026_02_24/14_57_SAE"
 
     # ---- Model ----
     config = json.load(open("config/SAE.json", "r"))

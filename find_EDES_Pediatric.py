@@ -13,7 +13,7 @@ from tasks.Compute_EDES import EDES_via_Phase, EDES_via_LMP, EDES_via_Norm
 from scipy.signal import detrend
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_23/15_20_SAE"
+load_dir = "results/2026_02_24/14_57_SAE"
 
 # ---- Model ----
 config = json.load(open(os.path.join(load_dir, "config.json"), "r"))
@@ -54,7 +54,7 @@ psax_dl = DataLoader(
 ### Run
 def run_dl(dl, view_name):
     print(f"Running on view {view_name} with {len(dl.dataset)} samples...")
-    problems = {}; errors = []; ms_errors = []
+    problems = {}; errors = []; ms_errors = []; assignments = []
     with torch.inference_mode():
         for i, batch in tqdm(enumerate(dl)):
             videos, timestamps, fps, ed, es = batch
@@ -69,8 +69,9 @@ def run_dl(dl, view_name):
             z = detrend(z, axis=0, type='linear')
 
             try:
-                ed_err, es_err = EDES_via_Phase(z, gt_ed, gt_es)
+                ed_err, es_err, assign = EDES_via_Phase(z, gt_ed, gt_es)
                 errors.append([i, ed_err, es_err])
+                assignments.append(assign)
                 if fps is not None:
                     ed_ms_err = ed_err * (1000.0 / fps)
                     es_ms_err = es_err * (1000.0 / fps)
@@ -89,6 +90,7 @@ def run_dl(dl, view_name):
     for error, indices in problems.items():
         print(f"Error: {error} - Occurred in samples: {indices}")
 
+    print(f"Correct assignments: {sum(assignments) / len(assignments) * 100:.2f}%")
     print(f"ED Error MAE: {np.mean([e[1] for e in errors]):.2f} frames, STD: {np.std([e[1] for e in errors]):.2f} frames")
     print(f"ED Error Time: {np.mean([e[1] for e in ms_errors]):.2f} ms, STD: {np.std([e[1] for e in ms_errors]):.2f} ms")
     print(f"ES Error MAE: {np.mean([e[2] for e in errors]):.2f} frames, STD: {np.std([e[2] for e in errors]):.2f} frames")

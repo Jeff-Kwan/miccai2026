@@ -13,7 +13,7 @@ from tasks.Compute_EDES import EDES_via_Phase, EDES_via_LMP, EDES_via_Norm
 from scipy.signal import detrend
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-load_dir = "results/2026_02_23/15_20_SAE"
+load_dir = "results/2026_02_24/14_57_SAE"
 
 # ---- Model ----
 config = json.load(open(os.path.join(load_dir, "config.json"), "r"))
@@ -64,8 +64,8 @@ with torch.inference_mode():
 
         try:
             ed_err, es_err, assign = EDES_via_Phase(z, gt_ed, gt_es)
-            # if ed_err == 0 and es_err == 0:
-            #     print(f"Sample {i} has no errors: ED_err={ed_err}, ES_err={es_err}")
+            if ed_err == 0 and es_err == 0:
+                print(f"Sample {i} has no errors: ED_err={ed_err}, ES_err={es_err}")
             errors.append([i, ed_err, es_err])
             assignments.append(assign)
             if fps is not None:
