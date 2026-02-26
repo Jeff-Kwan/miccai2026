@@ -41,10 +41,14 @@ def find_peaks_sentinel(input_array, p, d):
 
 def EDES_via_LMP(z, gt_ed, gt_es):
     group_ed, group_es, _, _, _, _ = compute_main_orientation_and_extrema(z, 50)
-    group = np.concatenate([group_ed, group_es])
-    ed_err = np.min(np.abs(group - gt_ed))
-    es_err = np.min(np.abs(group - gt_es))
-    return ed_err, es_err
+    ed_err = np.min(np.abs(group_ed - gt_ed))
+    es_err = np.min(np.abs(group_es - gt_es))
+    assign = (ed_err+es_err) <= (np.min(np.abs(group_es-gt_ed))+np.min(np.abs(group_ed-gt_es)))
+    min_err = [
+        min(np.min(np.abs(group_ed - gt_ed)), np.min(np.abs(group_es - gt_ed))),
+        min(np.min(np.abs(group_es - gt_es)), np.min(np.abs(group_ed - gt_es)))
+    ]
+    return ed_err, es_err, assign, min_err
 
 
 def EDES_via_Norm(z, gt_ed, gt_es):
@@ -71,7 +75,7 @@ def EDES_via_Phase(z, gt_ed, gt_es):
     peaks, valleys = find_peaks_sentinel(z_proj, p=0.3, d=5)
     ed_preds = peaks; es_preds = valleys
 
-    
+
     # dz_norms = np.linalg.norm(savgol_filter(z, deriv=1, window_length=11, polyorder=3, axis=0), axis=-1)
     # peak_d = np.mean(dz_norms[peaks])
     # valley_d = np.mean(dz_norms[valleys])

@@ -49,7 +49,7 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    load_dir = "results/2026_02_24/19_54_SAE"
+    load_dir = "results/2026_02_24/14_57_SAE"
 
     # ---- Model ----
     config = json.load(open(os.path.join(load_dir, "config.json"), "r"))
@@ -99,5 +99,5 @@ if __name__ == "__main__":
 
     # ---- Evaluation ----
     dls = [train_dl, val_dl, test_dl]
-    for dl, split_name in zip(dls, ["Train", "Validation", "Test"]):
+    for dl, split_name in zip(dls, ["Train", "Val", "Test"]):
         run_split(dl, split_name, autocast)

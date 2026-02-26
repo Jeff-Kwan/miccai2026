@@ -3,6 +3,7 @@ from sklearn.decomposition import PCA
 from scipy.signal import find_peaks, savgol_filter
 from scipy.signal import butter, filtfilt
 
+EDES_axis = np.load("tasks/EDES_axis.npy")
 
 def highpass_filter(signal, fs, cutoff=0.5, order=4, axis=0):
     nyquist = 0.5 * fs
@@ -83,6 +84,9 @@ def compute_main_orientation_and_extrema(
     # use unit direction for projection + endpoints
     direction = main_orientation / np.linalg.norm(main_orientation)
 
+    # if np.dot(direction, EDES_axis) < 0:
+    #     direction = -direction
+
     # --- Step 2: Project trajectory onto main axis to find extrema ---
     mean_point = np.mean(trajectory, axis=0)
     trajectory_projected = np.dot(trajectory - mean_point, direction)
@@ -100,7 +104,6 @@ def compute_main_orientation_and_extrema(
         filtered_proj = highpass_filter(new_traj, fps)[10:-10]
     else:
         filtered_proj = smoothed_proj
-    filtered_proj = trajectory_projected
 
     prominence_threshold = 0.3 * (np.max(filtered_proj) - np.min(filtered_proj))
 

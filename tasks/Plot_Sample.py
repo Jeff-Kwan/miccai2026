@@ -18,7 +18,7 @@ from tasks.Compute_EDES import find_peaks_sentinel
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 load_dir = "results/2026_02_24/14_57_SAE"
-out_dir = os.path.join(load_dir, "sample")
+out_dir = os.path.join(load_dir, "more_samples")
 os.makedirs(out_dir, exist_ok=True)
 
 config = json.load(open(os.path.join(load_dir, "config.json"), "r"))
@@ -35,7 +35,7 @@ model.load_state_dict(torch.load(os.path.join(load_dir, "SAE.pth"), map_location
 
 _, _, test_ds = load_echonet_dynamic_datasets(get_mask=True)
 
-idx = 20
+idx = 822
 video = test_ds[idx]['video'].to(device).unsqueeze(0)
 video = video * 2 - 1  # [0,1] → [-1,1]
 timestamps = test_ds[idx]['timestamps'].unsqueeze(0).to(device)

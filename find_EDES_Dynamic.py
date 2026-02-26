@@ -61,8 +61,8 @@ with torch.inference_mode():
 
         try:
             ed_err, es_err, assign, min_err = EDES_via_Phase(z, gt_ed, gt_es)
-            # if ed_err == 0 and es_err == 0:
-            #     print(f"Sample {i} has no errors: ED_err={ed_err}, ES_err={es_err}")
+            if ed_err == 0 and es_err == 0:
+                print(f"Sample {i} has no errors: ED_err={ed_err}, ES_err={es_err}")
             errors.append([i, ed_err, es_err])
             assignments.append(assign)
             min_err_list += min_err
